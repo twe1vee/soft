@@ -8,6 +8,8 @@ from .users import (
 
 from .ads import (
     ad_exists,
+    ad_seen_globally,
+    count_global_ad_views,
     save_ad,
     get_ad_by_id,
     get_ad_by_ad_id,

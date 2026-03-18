@@ -11,7 +11,7 @@ DEFAULT_TEMPLATE = (
 )
 
 
-def generate_draft(ad_data: dict) -> str:
-    template = get_active_template()
+def generate_draft(user_id: int, ad_data: dict) -> str:
+    template = get_active_template(user_id)
     template_text = template["template_text"] if template else DEFAULT_TEMPLATE
     return render_template(template_text, ad_data)

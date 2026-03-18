@@ -19,6 +19,43 @@ def ad_exists(user_id: int, ad_id: str | None) -> bool:
     return row is not None
 
 
+def ad_seen_globally(ad_id: str | None) -> bool:
+    if not ad_id:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id
+        FROM ads
+        WHERE ad_id = ?
+        LIMIT 1
+    """, (ad_id,))
+    row = cursor.fetchone()
+
+    conn.close()
+    return row is not None
+
+
+def count_global_ad_views(ad_id: str | None) -> int:
+    if not ad_id:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM ads
+        WHERE ad_id = ?
+    """, (ad_id,))
+    row = cursor.fetchone()
+
+    conn.close()
+    return row[0] if row else 0
+
+
 def save_ad(user_id: int, ad_data: dict) -> int:
     conn = get_connection()
     cursor = conn.cursor()

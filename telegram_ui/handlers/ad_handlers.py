@@ -5,6 +5,8 @@ from telegram.ext import ContextTypes
 
 from db import (
     ad_exists,
+    ad_seen_globally,
+    count_global_ad_views,
     save_ad,
     create_pending_action,
     update_ad_status,
@@ -37,30 +39,39 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return
 
     urls = urls[:MAX_URLS_PER_MESSAGE]
-    summary = []
 
     for url in urls:
         try:
             ad_data = await parse_olx_ad(url)
         except Exception as e:
-            summary.append(f"Ошибка парсинга: {url}\n{e}")
-            continue
-
-        if not ad_data.get("ad_id"):
-            summary.append(f"Не удалось извлечь ad_id: {url}")
-            continue
-
-        if ad_exists(user_id, ad_data["ad_id"]):
-            existing_ad = get_ad_by_ad_id(user_id, ad_data["ad_id"])
-            summary.append(
-                f"Дубликат: AD ID {ad_data['ad_id']}, "
-                f"status={existing_ad.get('status')}, "
-                f"seller={existing_ad.get('seller_name') or '?'}"
+            await update.message.reply_text(
+                f"Ошибка парсинга:\n{url}\n\n{e}",
+                reply_markup=build_back_to_menu_keyboard(),
             )
             continue
 
+        if not ad_data.get("ad_id"):
+            await update.message.reply_text(
+                f"Не удалось извлечь ad_id:\n{url}",
+                reply_markup=build_back_to_menu_keyboard(),
+            )
+            continue
+
+        ad_id = ad_data["ad_id"]
+
+        if ad_exists(user_id, ad_id):
+            existing_ad = get_ad_by_ad_id(user_id, ad_id)
+            await update.message.reply_text(
+                f"🔁 Это объявление уже смотрели ранее",
+                reply_markup=build_back_to_menu_keyboard(),
+            )
+            continue
+
+        globally_seen = ad_seen_globally(ad_id)
+        global_views_before_save = count_global_ad_views(ad_id)
+
         ad_data["status"] = "draft_ready"
-        ad_data["draft_text"] = generate_draft(ad_data)
+        ad_data["draft_text"] = generate_draft(user_id, ad_data)
 
         ad_row_id = save_ad(user_id, ad_data)
 
@@ -78,22 +89,22 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
 
         keyboard = build_action_keyboard(ad_row_id, action_id)
-
         saved_ad = get_ad_by_id(user_id, ad_row_id)
 
+        extra_note = ""
+        if globally_seen:
+            extra_note = (
+                f"\n\n👁️ Это объявление уже встречалось в системе ранее "
+                f"({global_views_before_save} раз).\n"
+
+            )
+
         await update.message.reply_text(
-            build_ad_caption(saved_ad),
+            build_ad_caption(saved_ad) + extra_note,
             reply_markup=keyboard,
         )
 
-        summary.append(f"Сохранено: AD ID {ad_data['ad_id']}")
-
     context.user_data.clear()
-
-    await update.message.reply_text(
-        "Результат:\n" + "\n".join(summary),
-        reply_markup=build_back_to_menu_keyboard(),
-    )
 
 
 async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
