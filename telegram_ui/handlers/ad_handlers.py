@@ -16,7 +16,7 @@ from db import (
 )
 from olx.draft import generate_draft
 from olx.parser import parse_olx_ad
-from telegram_ui.handlers.common import build_ad_caption
+from telegram_ui.handlers.common import build_ad_caption, get_current_user
 from telegram_ui.menu import build_action_keyboard, build_back_to_menu_keyboard
 
 OLX_URL_PATTERN = r"https?://[^\s]*olx[^\s]*"
@@ -24,6 +24,9 @@ MAX_URLS_PER_MESSAGE = 5
 
 
 async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    current_user = get_current_user(update)
+    user_id = current_user["id"]
+
     urls = re.findall(OLX_URL_PATTERN, text, re.IGNORECASE)
 
     if not urls:
@@ -47,8 +50,8 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             summary.append(f"Не удалось извлечь ad_id: {url}")
             continue
 
-        if ad_exists(ad_data["ad_id"]):
-            existing_ad = get_ad_by_ad_id(ad_data["ad_id"])
+        if ad_exists(user_id, ad_data["ad_id"]):
+            existing_ad = get_ad_by_ad_id(user_id, ad_data["ad_id"])
             summary.append(
                 f"Дубликат: AD ID {ad_data['ad_id']}, "
                 f"status={existing_ad.get('status')}, "
@@ -59,7 +62,7 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         ad_data["status"] = "draft_ready"
         ad_data["draft_text"] = generate_draft(ad_data)
 
-        ad_row_id = save_ad(ad_data)
+        ad_row_id = save_ad(user_id, ad_data)
 
         create_message(
             ad_db_id=ad_row_id,
@@ -76,8 +79,10 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         keyboard = build_action_keyboard(ad_row_id, action_id)
 
+        saved_ad = get_ad_by_id(user_id, ad_row_id)
+
         await update.message.reply_text(
-            build_ad_caption(ad_data),
+            build_ad_caption(saved_ad),
             reply_markup=keyboard,
         )
 
@@ -92,12 +97,33 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 
 async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    current_user = get_current_user(update)
+    user_id = current_user["id"]
+
     editing_ad_id = context.user_data.get("editing_ad_id")
     editing_action_id = context.user_data.get("editing_action_id")
 
+    if not editing_ad_id or not editing_action_id:
+        await update.message.reply_text(
+            "Нет объявления для редактирования.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
+
+    ad = get_ad_by_id(user_id, editing_ad_id)
+    if not ad:
+        await update.message.reply_text(
+            "Объявление не найдено или не принадлежит вам.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        context.user_data.pop("editing_ad_id", None)
+        context.user_data.pop("editing_action_id", None)
+        return
+
     new_text = text
 
-    update_ad_draft(editing_ad_id, new_text, new_status="draft_ready")
+    update_ad_draft(user_id, editing_ad_id, new_text, new_status="draft_ready")
+    ad = get_ad_by_id(user_id, editing_ad_id)
 
     create_message(
         ad_db_id=editing_ad_id,
@@ -105,8 +131,6 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
         text=new_text,
         status="edited_draft",
     )
-
-    ad = get_ad_by_id(editing_ad_id)
 
     context.user_data.pop("editing_ad_id", None)
     context.user_data.pop("editing_action_id", None)
@@ -120,6 +144,9 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    current_user = get_current_user(update)
+    user_id = current_user["id"]
+
     query = update.callback_query
     parts = data.split(":")
 
@@ -136,11 +163,16 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("Некорректные данные кнопки.")
         return
 
+    ad = get_ad_by_id(user_id, ad_row_id)
+    if not ad:
+        await query.edit_message_text("Объявление не найдено или не принадлежит вам.")
+        return
+
     if action == "approve":
-        update_ad_status(ad_row_id, "approved")
+        update_ad_status(user_id, ad_row_id, "approved")
         update_pending_action_status(pending_action_id, "done")
 
-        ad = get_ad_by_id(ad_row_id)
+        ad = get_ad_by_id(user_id, ad_row_id)
 
         create_message(
             ad_db_id=ad_row_id,
@@ -155,10 +187,10 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     if action == "reject":
-        update_ad_status(ad_row_id, "rejected")
+        update_ad_status(user_id, ad_row_id, "rejected")
         update_pending_action_status(pending_action_id, "cancelled")
 
-        ad = get_ad_by_id(ad_row_id)
+        ad = get_ad_by_id(user_id, ad_row_id)
 
         await query.edit_message_text(
             build_ad_caption(ad) + "\n\n❌ Статус: REJECTED"

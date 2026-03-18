@@ -20,16 +20,17 @@ def update_pending_action_status(action_id: int, new_status: str):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "UPDATE pending_actions SET status = ? WHERE id = ?",
-        (new_status, action_id),
-    )
+    cursor.execute("""
+        UPDATE pending_actions
+        SET status = ?
+        WHERE id = ?
+    """, (new_status, action_id))
 
     conn.commit()
     conn.close()
 
 
-def get_pending_actions(status: str = "pending") -> list[dict]:
+def get_pending_actions(user_id: int, status: str = "pending") -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -44,16 +45,16 @@ def get_pending_actions(status: str = "pending") -> list[dict]:
             a.price AS price
         FROM pending_actions pa
         LEFT JOIN ads a ON a.id = pa.ad_id
-        WHERE pa.status = ?
+        WHERE pa.status = ? AND a.user_id = ?
         ORDER BY pa.id DESC
-    """, (status,))
+    """, (status, user_id))
 
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
-def get_next_pending_action() -> dict | None:
+def get_next_pending_action(user_id: int) -> dict | None:
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -68,10 +69,10 @@ def get_next_pending_action() -> dict | None:
             a.price AS price
         FROM pending_actions pa
         LEFT JOIN ads a ON a.id = pa.ad_id
-        WHERE pa.status = 'pending'
+        WHERE pa.status = 'pending' AND a.user_id = ?
         ORDER BY pa.id ASC
         LIMIT 1
-    """)
+    """, (user_id,))
 
     row = cursor.fetchone()
     conn.close()
