@@ -1,19 +1,17 @@
 import logging
 import os
+
 from dotenv import load_dotenv
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-
+from telegram import BotCommand, MenuButtonCommands
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
 )
 
-from telegram_ui.handlers import (
+from telegram_ui import (
     start_handler,
     menu_handler,
     text_handler,
@@ -23,20 +21,38 @@ from telegram_ui.handlers import (
 )
 
 
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.WARNING,
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+
+
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("menu", "Открыть главное меню"),
+        BotCommand("start", "Запустить бота"),
+        BotCommand("account", "Аккаунт"),
+        BotCommand("templates", "Шаблоны"),
+        BotCommand("settings", "Настройка софта"),
+    ])
+
+    await application.bot.set_chat_menu_button(
+        menu_button=MenuButtonCommands()
+    )
 
 
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("menu", menu_handler))

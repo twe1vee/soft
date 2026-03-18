@@ -1,8 +1,7 @@
 from olx.draft import generate_draft
 
 import re
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove
 from telegram.ext import ContextTypes
 
 
@@ -77,7 +76,6 @@ async def show_main_menu(
             text,
             reply_markup=get_main_menu_inline_keyboard(),
         )
-
 
 async def show_templates_screen(query, template_text: str):
     await query.edit_message_text(
@@ -329,12 +327,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "menu:dialogs":
+    if data == "menu:settings":
         context.user_data.clear()
         await query.edit_message_text(
-            "💬 Проверить диалоги\n\n"
-            "Раздел пока в разработке.\n"
-            "Позже здесь будет проверка новых сообщений от продавцов.",
+            "⚙️ Настройка софта\n\n"
+            "Здесь будут пользовательские настройки работы софта.\n\n"
+            "Позже здесь будет:\n"
+            "- задержка между действиями\n"
+            "- лимиты обработки\n"
+            "- паузы\n"
+            "- дополнительные параметры поведения",
             reply_markup=build_back_to_menu_keyboard(),
         )
         return
