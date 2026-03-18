@@ -1,4 +1,4 @@
-from db.db import get_active_template
+from db import get_active_template
 from olx.template_service import render_template
 
 DEFAULT_TEMPLATE = (

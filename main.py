@@ -2,7 +2,7 @@ import asyncio
 
 from olx.parser import parse_olx_ad
 from olx.draft import generate_draft
-from db.db import (
+from db import (
     init_db,
     ad_exists,
     save_ad,

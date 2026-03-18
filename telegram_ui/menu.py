@@ -25,3 +25,19 @@ def get_templates_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main"),
         ],
     ])
+
+
+def build_back_to_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main")]
+    ])
+
+
+def build_action_keyboard(ad_row_id: int, action_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Approve", callback_data=f"approve:{ad_row_id}:{action_id}"),
+            InlineKeyboardButton("Edit", callback_data=f"edit:{ad_row_id}:{action_id}"),
+            InlineKeyboardButton("Reject", callback_data=f"reject:{ad_row_id}:{action_id}"),
+        ]
+    ])

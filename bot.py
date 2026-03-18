@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from telegram_ui import (
+from telegram_ui.handlers import (
     start_handler,
     menu_handler,
     text_handler,
@@ -19,7 +19,6 @@ from telegram_ui import (
     pending_handler,
     last_handler,
 )
-
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -42,10 +41,7 @@ async def post_init(application: Application):
         BotCommand("templates", "Шаблоны"),
         BotCommand("settings", "Настройка софта"),
     ])
-
-    await application.bot.set_chat_menu_button(
-        menu_button=MenuButtonCommands()
-    )
+    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
 def main():
