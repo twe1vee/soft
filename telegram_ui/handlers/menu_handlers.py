@@ -1,7 +1,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-
+from telegram_ui.handlers.proxy_handlers import show_proxies_screen
 from db import get_active_template, init_db
+from telegram_ui.handlers.account_handlers import show_accounts_screen
 from telegram_ui.handlers.common import show_main_menu, get_current_user
 from telegram_ui.handlers.template_handlers import show_templates_screen
 from telegram_ui.menu import build_back_to_menu_keyboard
@@ -34,17 +35,12 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == "menu:account":
         context.user_data.clear()
-        await query.edit_message_text(
-            "👤 Аккаунт\n\n"
-            "Раздел пока в разработке.\n\n"
-            "Позже здесь будет:\n"
-            "- загрузка cookies\n"
-            "- проверка авторизации\n"
-            "- работа с аккаунтом OLX\n"
-            "- активный аккаунт\n"
-            "- proxy / user-agent",
-            reply_markup=build_back_to_menu_keyboard(),
-        )
+        await show_accounts_screen(update, context)
+        return
+
+    if data == "menu:proxies":
+        context.user_data.clear()
+        await show_proxies_screen(update, context)
         return
 
     if data == "menu:templates":

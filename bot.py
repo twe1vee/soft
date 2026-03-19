@@ -18,6 +18,7 @@ from telegram_ui.handlers import (
     button_handler,
     pending_handler,
     last_handler,
+    document_handler,
 )
 
 load_dotenv()
@@ -56,6 +57,7 @@ def main():
     app.add_handler(CommandHandler("last", last_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
 
     print("Bot is running...")
     app.run_polling(drop_pending_updates=True)

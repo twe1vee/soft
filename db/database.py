@@ -1,5 +1,6 @@
 import sqlite3
 
+
 DB_FILE = "olx_assistant.db"
 
 
@@ -16,12 +17,10 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id TEXT NOT NULL UNIQUE,
+            telegram_id INTEGER NOT NULL UNIQUE,
             username TEXT,
             first_name TEXT,
-            last_name TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -30,14 +29,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             url TEXT NOT NULL,
+            title TEXT,
             price TEXT,
             seller_name TEXT,
-            ad_id TEXT NOT NULL,
+            ad_id TEXT,
             status TEXT NOT NULL,
             draft_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            UNIQUE(user_id, ad_id)
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -48,7 +47,7 @@ def init_db():
             action_type TEXT NOT NULL,
             status TEXT NOT NULL,
             payload_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (ad_id) REFERENCES ads(id)
         )
     """)
@@ -57,10 +56,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ad_id INTEGER NOT NULL,
-            direction TEXT NOT NULL,
+            role TEXT NOT NULL,
             text TEXT NOT NULL,
-            status TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (ad_id) REFERENCES ads(id)
         )
     """)
@@ -70,18 +68,36 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL UNIQUE,
             template_text TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_id ON ads(user_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_status ON ads(user_id, status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_ad_id ON ads(ad_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_actions_ad_id ON pending_actions(ad_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_ad_id ON messages(ad_id)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            olx_profile_name TEXT,
+            cookies_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            last_check_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS proxies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            proxy_text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            last_check_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
     conn.commit()
     conn.close()

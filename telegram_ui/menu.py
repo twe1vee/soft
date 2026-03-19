@@ -4,11 +4,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Обработать ссылки 👍", callback_data="menu:process_links"),
+            InlineKeyboardButton("Обработать ссылки 🔗", callback_data="menu:process_links"),
         ],
         [
-            InlineKeyboardButton("Аккаунт 🍇", callback_data="menu:account"),
-            InlineKeyboardButton("Шаблоны 🙌", callback_data="menu:templates"),
+            InlineKeyboardButton("Аккаунт 👤", callback_data="menu:account"),
+            InlineKeyboardButton("Прокси 🌐", callback_data="menu:proxies"),
+            InlineKeyboardButton("Шаблоны 📝", callback_data="menu:templates"),
         ],
         [
             InlineKeyboardButton("Настройка софта ⚙️", callback_data="menu:settings"),
