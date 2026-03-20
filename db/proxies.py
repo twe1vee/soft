@@ -67,8 +67,7 @@ def get_proxy_by_id(user_id: int, proxy_id: int) -> dict | None:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT *
-        FROM proxies
+        SELECT * FROM proxies
         WHERE id = ? AND user_id = ?
         LIMIT 1
     """, (proxy_id, user_id))
@@ -83,8 +82,7 @@ def get_user_proxies(user_id: int) -> list[dict]:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT *
-        FROM proxies
+        SELECT * FROM proxies
         WHERE user_id = ?
         ORDER BY id ASC
     """, (user_id,))
@@ -99,8 +97,7 @@ def get_next_available_proxy(user_id: int) -> dict | None:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT *
-        FROM proxies
+        SELECT * FROM proxies
         WHERE user_id = ?
           AND status IN ('new', 'working')
         ORDER BY id ASC
@@ -160,6 +157,13 @@ def mark_proxy_checked(user_id: int, proxy_id: int, status: str = "working"):
 def delete_proxy(user_id: int, proxy_id: int):
     conn = get_connection()
     cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE accounts
+        SET proxy_id = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND proxy_id = ?
+    """, (user_id, proxy_id))
 
     cursor.execute("""
         DELETE FROM proxies

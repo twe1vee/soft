@@ -1,5 +1,3 @@
-import json
-
 from db.database import get_connection
 
 
@@ -37,8 +35,7 @@ def get_account_by_id(user_id: int, account_id: int) -> dict | None:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT *
-        FROM accounts
+        SELECT * FROM accounts
         WHERE id = ? AND user_id = ?
         LIMIT 1
     """, (account_id, user_id))
@@ -53,8 +50,7 @@ def get_user_accounts(user_id: int) -> list[dict]:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT *
-        FROM accounts
+        SELECT * FROM accounts
         WHERE user_id = ?
         ORDER BY id ASC
     """, (user_id,))
@@ -110,13 +106,28 @@ def update_account_cookies(user_id: int, account_id: int, cookies_json: str):
     conn.close()
 
 
+def update_account_proxy(user_id: int, account_id: int, proxy_id: int | None):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE accounts
+        SET proxy_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+    """, (proxy_id, account_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
 def update_account_last_check(user_id: int, account_id: int):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE accounts
-        SET last_check_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        SET last_check_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND user_id = ?
     """, (account_id, user_id))
 

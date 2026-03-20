@@ -42,6 +42,7 @@ from .accounts import (
     update_account_status,
     update_account_profile_name,
     update_account_cookies,
+    update_account_proxy,
     update_account_last_check,
     mark_account_checked,
     delete_account,
