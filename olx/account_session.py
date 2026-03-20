@@ -1,118 +1,19 @@
-import json
+# olx/account_session.py
+
+from __future__ import annotations
+
 from typing import Any
 
-from playwright.async_api import async_playwright
-
-
-OLX_HOME_URL = "https://www.olx.pl/"
-OLX_ACCOUNT_URL = "https://www.olx.pl/moj-olx/"
-
-
-def parse_proxy_text(proxy_text: str) -> dict[str, str]:
-    value = proxy_text.strip()
-
-    if not value:
-        raise ValueError("Пустая строка proxy")
-
-    if value.startswith("http://") or value.startswith("https://"):
-        return {"server": value}
-
-    parts = value.split(":")
-
-    if len(parts) == 2:
-        host, port = parts
-        return {
-            "server": f"http://{host}:{port}",
-        }
-
-    if len(parts) == 4:
-        host, port, username, password = parts
-        return {
-            "server": f"http://{host}:{port}",
-            "username": username,
-            "password": password,
-        }
-
-    raise ValueError(
-        "Неверный формат proxy. Ожидается host:port или host:port:login:password"
-    )
-
-
-def normalize_same_site(value: str | None) -> str | None:
-    if not value:
-        return None
-
-    lowered = value.lower()
-
-    if lowered == "lax":
-        return "Lax"
-    if lowered == "strict":
-        return "Strict"
-    if lowered == "none":
-        return "None"
-
-    return None
-
-
-def normalize_cookies(cookies_json: str) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(cookies_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError("cookies_json не является валидным JSON") from exc
-
-    if not isinstance(parsed, list):
-        raise ValueError("cookies_json должен быть JSON-массивом")
-
-    normalized: list[dict[str, Any]] = []
-
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-
-        name = item.get("name")
-        value = item.get("value")
-
-        if not name or value is None:
-            continue
-
-        cookie: dict[str, Any] = {
-            "name": name,
-            "value": str(value),
-            "path": item.get("path", "/"),
-        }
-
-        domain = item.get("domain")
-        url = item.get("url")
-
-        if domain:
-            cookie["domain"] = domain
-        elif url:
-            cookie["url"] = url
-        else:
-            cookie["domain"] = ".olx.pl"
-
-        expires = item.get("expires")
-        if isinstance(expires, (int, float)) and expires > 0:
-            cookie["expires"] = expires
-
-        http_only = item.get("httpOnly")
-        if isinstance(http_only, bool):
-            cookie["httpOnly"] = http_only
-
-        secure = item.get("secure")
-        if isinstance(secure, bool):
-            cookie["secure"] = secure
-
-        same_site = normalize_same_site(item.get("sameSite"))
-        if same_site:
-            cookie["sameSite"] = same_site
-
-        normalized.append(cookie)
-
-    if not normalized:
-        raise ValueError("После нормализации не осталось ни одной cookies")
-
-    return normalized
+from olx.browser_session import (
+    PT_ACCOUNT_URL,
+    PT_HOME_URL,
+    dismiss_cookie_banner_if_present,
+    get_current_context_cookies,
+    open_olx_browser_context,
+    open_olx_page,
+)
+from olx.cookies import normalize_cookies
+from olx.proxy_bridge import build_bridge_proxy_settings
 
 
 def get_auth_cookie_names(cookies: list[dict[str, Any]]) -> list[str]:
@@ -126,8 +27,7 @@ def get_auth_cookie_names(cookies: list[dict[str, Any]]) -> list[str]:
         "phpsessid",
     }
 
-    found = []
-
+    found: list[str] = []
     for cookie in cookies:
         name = str(cookie.get("name", "")).lower()
         if name in important_names:
@@ -136,25 +36,30 @@ def get_auth_cookie_names(cookies: list[dict[str, Any]]) -> list[str]:
     return found
 
 
-def detect_logged_in_from_page(url: str, body_text: str, auth_cookie_names: list[str]) -> bool:
+def detect_logged_in_from_page(
+    url: str,
+    body_text: str,
+    auth_cookie_names: list[str],
+) -> bool:
     lowered_url = url.lower()
     lowered_body = body_text.lower()
 
     login_signals = [
-        "zaloguj",
-        "zarejestruj",
+        "iniciar sessão",
+        "entrar",
+        "login",
         "sign in",
         "log in",
-        "utwórz konto",
+        "criar conta",
     ]
-
     account_signals = [
-        "moj olx",
-        "twoje konto",
-        "twoje ogłoszenia",
-        "obserwowane",
-        "wiadomości",
-        "konto",
+        "a minha conta",
+        "myaccount",
+        "mensagens",
+        "favoritos",
+        "conta",
+        "logout",
+        "sair",
     ]
 
     redirected_to_login = "login" in lowered_url or "auth" in lowered_url
@@ -177,56 +82,62 @@ def detect_logged_in_from_page(url: str, body_text: str, auth_cookie_names: list
     return False
 
 
-async def check_account_with_proxy(cookies_json: str, proxy_text: str) -> dict[str, Any]:
+async def check_account_with_proxy(
+    cookies_json: str,
+    proxy_text: str,
+    *,
+    headless: bool = True,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": False,
         "status": "unknown_error",
         "final_url": None,
         "auth_cookie_names": [],
-        "profile_name": None,
+        "bridge_server": None,
         "error": None,
     }
 
     try:
-        proxy = parse_proxy_text(proxy_text)
-        cookies = normalize_cookies(cookies_json)
+        bridge_proxy = build_bridge_proxy_settings(proxy_text)
+        result["bridge_server"] = bridge_proxy["server"]
+        normalize_cookies(cookies_json)
     except Exception as exc:
         result["status"] = "invalid_input"
         result["error"] = str(exc)
         return result
 
-    browser = None
-    context = None
-
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy,
+        async with open_olx_browser_context(
+            cookies_json=cookies_json,
+            proxy_text=proxy_text,
+            headless=headless,
+        ) as (_, context):
+            page = await open_olx_page(
+                context,
+                PT_HOME_URL,
+                timeout=90000,
+                wait_after_ms=3000,
             )
 
-            context = await browser.new_context()
-            await context.add_cookies(cookies)
+            await dismiss_cookie_banner_if_present(page)
+            await page.wait_for_timeout(1000)
 
-            page = await context.new_page()
+            await page.goto(
+                PT_ACCOUNT_URL,
+                wait_until="domcontentloaded",
+                timeout=90000,
+            )
+            await page.wait_for_timeout(4000)
 
-            await page.goto(OLX_HOME_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2000)
-
-            await page.goto(OLX_ACCOUNT_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2500)
-
-            final_url = page.url
-            result["final_url"] = final_url
+            result["final_url"] = page.url
 
             body_text = await page.locator("body").inner_text()
-
-            current_cookies = await context.cookies()
+            current_cookies = await get_current_context_cookies(context)
             auth_cookie_names = get_auth_cookie_names(current_cookies)
             result["auth_cookie_names"] = auth_cookie_names
 
             is_logged_in = detect_logged_in_from_page(
-                url=final_url,
+                url=page.url,
                 body_text=body_text,
                 auth_cookie_names=auth_cookie_names,
             )
@@ -255,6 +166,8 @@ async def check_account_with_proxy(cookies_json: str, proxy_text: str) -> dict[s
             "browser has been closed",
             "socks",
             "connection refused",
+            "connection reset",
+            "net::err",
         ]
 
         if any(marker in message for marker in proxy_error_markers):
@@ -263,16 +176,3 @@ async def check_account_with_proxy(cookies_json: str, proxy_text: str) -> dict[s
             result["status"] = "browser_failed"
 
         return result
-
-    finally:
-        try:
-            if context:
-                await context.close()
-        except Exception:
-            pass
-
-        try:
-            if browser:
-                await browser.close()
-        except Exception:
-            pass
