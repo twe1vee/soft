@@ -112,9 +112,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if (
-        data.startswith("approve:")
-        or data.startswith("reject:")
-        or data.startswith("edit:")
+            data.startswith("approve:")
+            or data.startswith("approve_account:")
+            or data.startswith("reject:")
+            or data.startswith("edit:")
+            or data.startswith("back_to_actions:")
     ):
         await handle_ad_callback(update, context, data)
         return
@@ -122,5 +124,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("proxy:"):
         await handle_proxy_callback(update, context, data)
         return
+
 
     await query.edit_message_text("Неизвестное действие.")

@@ -1,9 +1,9 @@
-# olx/message_sender.py
-
 from __future__ import annotations
 
 from typing import Any
-
+import json
+from pathlib import Path
+from datetime import datetime
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from olx.browser_session import (
@@ -22,42 +22,117 @@ SEND_BUTTON_TEXTS = [
 ]
 
 MESSAGE_INPUT_SELECTORS = [
+    # portal/chat roots
     "#chatPortalRoot textarea",
     "#root-portal textarea",
+    '[data-testid="chat-modal"] textarea',
+    '[data-testid="chat"] textarea',
+    '[data-testid="conversation-message-input"] textarea',
+    '[data-testid="message-input"] textarea',
+    '.css-1t3t97v textarea',
+    # generic textarea variants
     'textarea[data-testid="message-input"]',
+    'textarea[data-testid="textarea"]',
     'textarea[name="message"]',
+    'textarea[placeholder]',
     "textarea",
-    '#chatPortalRoot [role="textbox"]',
-    '#root-portal [role="textbox"]',
+    # role=textbox
+    "#chatPortalRoot [role='textbox']",
+    "#root-portal [role='textbox']",
+    '[data-testid="chat-modal"] [role="textbox"]',
+    '[data-testid="chat"] [role="textbox"]',
+    '[data-testid="conversation-message-input"] [role="textbox"]',
     '[role="textbox"]',
+    # contenteditable
     '#chatPortalRoot [contenteditable="true"]',
     '#root-portal [contenteditable="true"]',
+    '[data-testid="chat-modal"] [contenteditable="true"]',
+    '[data-testid="chat"] [contenteditable="true"]',
+    '[data-testid="conversation-message-input"] [contenteditable="true"]',
     '[contenteditable="true"]',
     'div[contenteditable="true"]',
+]
+
+CHAT_ROOT_SELECTORS = [
+    "#chatPortalRoot",
+    "#root-portal",
+    '[data-testid="chat-modal"]',
+    '[data-testid="chat"]',
+    '[data-testid="conversation-message-input"]',
+]
+
+LOGIN_HINT_SELECTORS = [
+    'a[href*="conta"]',
+    'a[href*="login"]',
+    'button:has-text("Entrar")',
+    'button:has-text("Iniciar sessão")',
+    'text=Entrar',
+    'text=Iniciar sessão',
 ]
 
 
 def _base_result() -> dict[str, Any]:
     return {
-        "ok": False,
-        "status": "unknown_error",
-        "ad_url": None,
-        "final_url": None,
-        "bridge_server": None,
-        "message_length": 0,
-        "message_button_clicked": False,
-        "input_found": False,
-        "send_button_found": False,
-        "sent": False,
+        "page_title": None,
+        "debug_chat_root_found": False,
+        "debug_login_hint_found": False,
+        "debug_html_path": None,
+        "debug_png_path": None,
+        "debug_json_path": None,
+        "debug_html_error": None,
+        "debug_png_error": None,
+        "debug_json_error": None,
         "error": None,
     }
+def _debug_dir() -> Path:
+    path = Path("debug_artifacts")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
+
+def _debug_stamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+async def _save_debug_artifacts(page, result: dict, prefix: str = "send_debug") -> dict:
+    stamp = _debug_stamp()
+    debug_dir = _debug_dir()
+
+    html_path = debug_dir / f"{prefix}_{stamp}.html"
+    png_path = debug_dir / f"{prefix}_{stamp}.png"
+    json_path = debug_dir / f"{prefix}_{stamp}.json"
+
+    try:
+        html = await page.content()
+        html_path.write_text(html, encoding="utf-8")
+        result["debug_html_path"] = str(html_path)
+    except Exception as exc:
+        result["debug_html_error"] = str(exc)
+
+    try:
+        await page.screenshot(path=str(png_path), full_page=True)
+        result["debug_png_path"] = str(png_path)
+    except Exception as exc:
+        result["debug_png_error"] = str(exc)
+
+    try:
+        json_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["debug_json_path"] = str(json_path)
+    except Exception as exc:
+        result["debug_json_error"] = str(exc)
+
+    return result
 
 async def _click_chat_button(page) -> bool:
     candidates = [
         page.locator('[data-testid="chat-button"]').first,
         page.get_by_role("button", name="Enviar mensagem"),
         page.locator("button:has-text('Enviar mensagem')").first,
+        page.locator("a:has-text('Enviar mensagem')").first,
+        page.locator("text=Enviar mensagem").first,
     ]
 
     for locator in candidates:
@@ -87,20 +162,28 @@ async def _click_chat_button(page) -> bool:
 
 
 async def _wait_for_chat_mount(page) -> None:
-    portal_selectors = [
-        "#chatPortalRoot",
-        "#root-portal",
-    ]
-
-    for selector in portal_selectors:
+    for selector in CHAT_ROOT_SELECTORS:
         try:
             locator = page.locator(selector).first
             if await locator.count() > 0:
-                await page.wait_for_timeout(3000)
+                await locator.wait_for(state="visible", timeout=7000)
+                await page.wait_for_timeout(1200)
+                return
         except Exception:
             continue
 
-    await page.wait_for_timeout(6000)
+    # fallback: wait for any plausible input
+    for selector in MESSAGE_INPUT_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() > 0:
+                await locator.wait_for(state="attached", timeout=7000)
+                await page.wait_for_timeout(1200)
+                return
+        except Exception:
+            continue
+
+    await page.wait_for_timeout(5000)
 
 
 async def _find_message_input(page):
@@ -108,13 +191,13 @@ async def _find_message_input(page):
         locator = page.locator(selector).first
 
         try:
-            if await page.locator(selector).count() == 0:
+            if await locator.count() == 0:
                 continue
         except Exception:
             continue
 
         try:
-            await locator.wait_for(state="attached", timeout=5000)
+            await locator.wait_for(state="attached", timeout=3000)
         except Exception:
             pass
 
@@ -130,6 +213,32 @@ async def _find_message_input(page):
             continue
 
     return None
+
+
+async def _has_login_hint(page) -> bool:
+    for selector in LOGIN_HINT_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if await locator.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _has_chat_root(page) -> bool:
+    for selector in CHAT_ROOT_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if await locator.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def _fill_message_input(locator, message_text: str) -> None:
@@ -161,13 +270,11 @@ async def _click_send_button(page, input_locator) -> bool:
     candidates = []
 
     for text in SEND_BUTTON_TEXTS:
-        candidates.extend(
-            [
-                page.get_by_role("button", name=text),
-                page.locator(f"button:has-text('{text}')"),
-                page.locator(f"text={text}"),
-            ]
-        )
+        candidates.extend([
+            page.get_by_role("button", name=text),
+            page.locator(f"button:has-text('{text}')"),
+            page.locator(f"text={text}"),
+        ])
 
     for locator in candidates:
         try:
@@ -241,7 +348,13 @@ async def send_message_to_ad(
                 timeout=90000,
                 wait_after_ms=5000,
             )
+
             result["final_url"] = page.url
+
+            try:
+                result["page_title"] = await page.title()
+            except Exception:
+                pass
 
             await dismiss_cookie_banner_if_present(page)
             await page.wait_for_timeout(1500)
@@ -254,11 +367,23 @@ async def send_message_to_ad(
 
                 if clicked:
                     await _wait_for_chat_mount(page)
-                    input_locator = await _find_message_input(page)
+
+                result["debug_chat_root_found"] = await _has_chat_root(page)
+                result["debug_login_hint_found"] = await _has_login_hint(page)
+
+                input_locator = await _find_message_input(page)
 
             if input_locator is None:
+                if result["debug_login_hint_found"]:
+                    result["status"] = "login_required_or_chat_blocked"
+                    result[
+                        "error"] = "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода"
+                    await _save_debug_artifacts(page, result, prefix="login_required_or_chat_blocked")
+                    return result
+
                 result["status"] = "message_input_not_found"
                 result["error"] = "Не найдено поле ввода сообщения после клика по chat-button"
+                await _save_debug_artifacts(page, result, prefix="message_input_not_found")
                 return result
 
             result["input_found"] = True
@@ -272,6 +397,7 @@ async def send_message_to_ad(
             if not send_clicked:
                 result["status"] = "send_button_not_found"
                 result["error"] = "Не найдена кнопка отправки сообщения"
+                await _save_debug_artifacts(page, result, prefix="send_button_not_found")
                 return result
 
             await page.wait_for_timeout(4000)
@@ -307,5 +433,11 @@ async def send_message_to_ad(
             result["status"] = "proxy_failed"
         else:
             result["status"] = "browser_failed"
+
+        try:
+            if "page" in locals() and page is not None:
+                await _save_debug_artifacts(page, result, prefix=result["status"])
+        except Exception:
+            pass
 
         return result

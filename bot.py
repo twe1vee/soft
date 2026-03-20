@@ -33,7 +33,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
-
 async def post_init(application: Application):
     await application.bot.set_my_commands([
         BotCommand("menu", "Открыть главное меню"),
