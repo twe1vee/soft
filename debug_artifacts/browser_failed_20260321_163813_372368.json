@@ -1,0 +1,22 @@
+{
+  "page_title": "Cama Individual em Ferro Branco – Estrutura Resistente | Ideal Quarto/ Santa Clara • OLX.pt",
+  "debug_chat_root_found": false,
+  "debug_login_hint_found": false,
+  "debug_html_path": null,
+  "debug_png_path": null,
+  "debug_json_path": null,
+  "debug_html_error": "Page.content: Target page, context or browser has been closed",
+  "debug_png_error": "Page.screenshot: Target page, context or browser has been closed",
+  "debug_json_error": null,
+  "error": "name '_click_send_button' is not defined",
+  "ad_url": "https://www.olx.pt/d/anuncio/cama-individual-em-ferro-branco-estrutura-resistente-ideal-quarto-IDJiBPK.html?reason=ip%7Clister",
+  "message_length": 4,
+  "bridge_server": "http://127.0.0.1:8118",
+  "final_url": "https://www.olx.pt/d/anuncio/cama-individual-em-ferro-branco-estrutura-resistente-ideal-quarto-IDJiBPK.html?reason=ip%7Clister",
+  "message_button_clicked": true,
+  "chat_button_still_visible_after_click": true,
+  "chat_button_text_after_click": "Enviar mensagem",
+  "input_found": true,
+  "submit_button_visible_before_click": true,
+  "status": "browser_failed"
+}
