@@ -1,0 +1,20 @@
+{
+  "page_title": "Marcadores Bases de prato acrílicas douradas – Últimas 50 unidades Rio de Mouro • OLX.pt",
+  "debug_chat_root_found": false,
+  "debug_login_hint_found": true,
+  "debug_html_path": "debug_artifacts\\login_required_or_chat_blocked_20260323_205921_185353.html",
+  "debug_png_path": "debug_artifacts\\login_required_or_chat_blocked_20260323_205921_185353.png",
+  "debug_json_path": null,
+  "debug_html_error": null,
+  "debug_png_error": null,
+  "debug_json_error": null,
+  "chat_button_still_visible_after_click": null,
+  "chat_button_text_after_click": null,
+  "error": "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода",
+  "ad_url": "https://www.olx.pt/d/anuncio/marcadores-bases-de-prato-acrlicas-douradas-ltimas-50-unidades-IDJhJsl.html?search_reason=search%7Cpromoted",
+  "message_length": 4,
+  "bridge_server": "http://127.0.0.1:8118",
+  "final_url": "https://www.olx.pt/d/anuncio/marcadores-bases-de-prato-acrlicas-douradas-ltimas-50-unidades-IDJhJsl.html?search_reason=search%7Cpromoted",
+  "message_button_clicked": false,
+  "status": "login_required_or_chat_blocked"
+}

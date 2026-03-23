@@ -1,0 +1,19 @@
+{
+  "page_title": "ERROR: The request could not be satisfied",
+  "debug_chat_root_found": false,
+  "debug_login_hint_found": false,
+  "debug_html_path": "debug_artifacts\\cloudfront_blocked_20260323_212427_486926.html",
+  "debug_png_path": "debug_artifacts\\cloudfront_blocked_20260323_212427_486926.png",
+  "debug_json_path": null,
+  "debug_html_error": null,
+  "debug_png_error": null,
+  "debug_json_error": null,
+  "chat_button_still_visible_after_click": null,
+  "chat_button_text_after_click": null,
+  "error": "OLX/CloudFront заблокировал запрос и вернул 403 block page",
+  "ad_url": "https://www.olx.pt/d/anuncio/aquecedor-a-gs-orbegozo-hbf-90-IDJ9mVm.html",
+  "message_length": 4,
+  "bridge_server": "http://127.0.0.1:8118",
+  "final_url": "https://www.olx.pt/d/anuncio/aquecedor-a-gs-orbegozo-hbf-90-IDJ9mVm.html",
+  "status": "cloudfront_blocked"
+}

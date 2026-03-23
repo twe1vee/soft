@@ -29,6 +29,7 @@ from telegram_ui.handlers.template_handlers import (
     handle_editing_template_text,
     handle_template_callback,
 )
+from telegram.error import BadRequest
 
 OLX_URL_PATTERN = r"https?://[^\s]*olx[^\s]*"
 
@@ -96,8 +97,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
 
-    await query.answer()
+
     data = query.data or ""
+
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
+    except Exception:
+        pass
 
     if data.startswith("menu:"):
         await handle_menu_callback(update, context, data)

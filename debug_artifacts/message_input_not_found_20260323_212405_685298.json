@@ -1,0 +1,20 @@
+{
+  "page_title": "Portugal Anúncios Classificados OLX",
+  "debug_chat_root_found": false,
+  "debug_login_hint_found": false,
+  "debug_html_path": "debug_artifacts\\message_input_not_found_20260323_212405_685298.html",
+  "debug_png_path": "debug_artifacts\\message_input_not_found_20260323_212405_685298.png",
+  "debug_json_path": null,
+  "debug_html_error": null,
+  "debug_png_error": null,
+  "debug_json_error": null,
+  "chat_button_still_visible_after_click": null,
+  "chat_button_text_after_click": null,
+  "error": "Не найдено поле ввода сообщения после клика по chat-button",
+  "ad_url": "https://www.olx.pt/d/anuncio/sapatilhas-friendly-fire-IDJhAOF.html",
+  "message_length": 4,
+  "bridge_server": "http://127.0.0.1:8118",
+  "final_url": "https://www.olx.pt/d/anuncio/sapatilhas-friendly-fire-IDJhAOF.html",
+  "message_button_clicked": false,
+  "status": "message_input_not_found"
+}
