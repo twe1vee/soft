@@ -194,7 +194,7 @@ async def show_account_card(query, user_id: int, account_id: int):
         "📌 Карточка аккаунта\n\n"
         f"Аккаунт: {profile_name}\n"
         f"Статус: {status}\n"
-        f"Прокси: {proxy_text}\n"
+        f"Прокси: {proxy_text}\n\n"
         f"Последняя проверка: {last_check_at}",
         reply_markup=build_account_card_keyboard(account_id, has_proxy=bool(account.get("proxy_id"))),
     )
