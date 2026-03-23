@@ -193,6 +193,8 @@ async def send_message_to_ad(
                 result["ok"] = True
                 result["status"] = "sent"
                 result["sent"] = True
+
+                await save_debug_artifacts(page, result, prefix="sent_success")
                 return result
 
             result["status"] = "send_clicked_unverified"
