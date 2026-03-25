@@ -12,7 +12,6 @@ from olx.browser_session import (
     open_olx_page,
 )
 from olx.cookies import normalize_cookies
-from olx.proxy_bridge import build_bridge_proxy_settings
 
 
 def get_auth_cookie_names(cookies: list[dict[str, Any]]) -> list[str]:
@@ -125,6 +124,9 @@ async def check_account_with_proxy(
     proxy_text: str,
     *,
     headless: bool = True,
+    user_id: int | None = None,
+    account_id: int | None = None,
+    olx_profile_name: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": False,
@@ -132,18 +134,24 @@ async def check_account_with_proxy(
         "final_url": None,
         "page_title": None,
         "auth_cookie_names": [],
-        "bridge_server": None,
         "profile_name": None,
+        "browser_engine": "gologin",
+        "gologin_profile_id": None,
+        "gologin_profile_name": None,
+        "debugger_address": None,
         "error": None,
     }
 
     try:
-        bridge_proxy = build_bridge_proxy_settings(proxy_text)
-        result["bridge_server"] = bridge_proxy["server"]
         normalize_cookies(cookies_json)
     except Exception as exc:
-        result["status"] = "failed"
+        result["status"] = "invalid_cookies"
         result["error"] = str(exc)
+        return result
+
+    if not (proxy_text or "").strip():
+        result["status"] = "missing_proxy"
+        result["error"] = "Пустой proxy_text"
         return result
 
     try:
@@ -151,7 +159,15 @@ async def check_account_with_proxy(
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             headless=headless,
-        ) as (_, context):
+            user_id=user_id,
+            account_id=account_id,
+            olx_profile_name=olx_profile_name,
+        ) as (_, context, runtime):
+            result["browser_engine"] = runtime.get("browser_engine", "gologin")
+            result["gologin_profile_id"] = runtime.get("gologin_profile_id")
+            result["gologin_profile_name"] = runtime.get("gologin_profile_name")
+            result["debugger_address"] = runtime.get("debugger_address")
+
             page = await open_olx_page(
                 context,
                 PT_HOME_URL,
@@ -201,29 +217,20 @@ async def check_account_with_proxy(
                 result["status"] = "connected"
                 return result
 
+            if detect_cloudfront_or_block_page(
+                result["final_url"] or "",
+                result["page_title"] or "",
+                body_text,
+            ):
+                result["status"] = "cloudfront_blocked"
+                result["error"] = "OLX/CloudFront заблокировал страницу"
+                return result
+
             result["status"] = "failed"
             result["error"] = "OLX account page did not confirm authenticated session"
             return result
 
     except Exception as exc:
-        message = str(exc).lower()
         result["error"] = str(exc)
-
-        proxy_error_markers = [
-            "proxy",
-            "tunnel",
-            "timeout",
-            "net::err_proxy",
-            "browser has been closed",
-            "socks",
-            "connection refused",
-            "connection reset",
-            "net::err",
-        ]
-
-        if any(marker in message for marker in proxy_error_markers):
-            result["status"] = "failed"
-        else:
-            result["status"] = "failed"
-
+        result["status"] = "failed"
         return result

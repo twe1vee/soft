@@ -33,10 +33,22 @@ def account_display_name(account: dict, fallback_index: int | None = None) -> st
 
 def humanize_account_status(status: str | None) -> str:
     value = (status or "").strip().lower()
+
     if value in {"connected", "working", "checked"}:
         return "живой"
-    if value in {"failed", "proxy_failed", "invalid_cookies", "missing_proxy", "proxy_not_found", "missing_cookies"}:
+
+    if value in {
+        "failed",
+        "proxy_failed",
+        "invalid_cookies",
+        "missing_proxy",
+        "proxy_not_found",
+        "missing_cookies",
+        "cloudfront_blocked",
+        "login_required_or_chat_blocked",
+    }:
         return "мёртвый"
+
     return "не проверен"
 
 
@@ -53,7 +65,6 @@ def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
     for index, account in enumerate(accounts, start=1):
         profile_name = account_display_name(account, fallback_index=index)
         status = humanize_account_status(account.get("status"))
-
         keyboard.append([
             InlineKeyboardButton(
                 f"{index}. {profile_name} [{status}]",
@@ -63,6 +74,7 @@ def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
 
     keyboard.append([InlineKeyboardButton("➕ Добавить аккаунт", callback_data="account:add")])
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu:main")])
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -98,7 +110,11 @@ def build_account_proxy_select_keyboard(account_id: int, proxies: list[dict]) ->
     for index, proxy in enumerate(proxies, start=1):
         proxy_text = proxy.get("proxy_text", "")
         status = proxy.get("status", "unknown")
-        ui_status = "живой" if status in {"working", "connected", "checked"} else ("мёртвый" if status == "failed" else "не проверен")
+        ui_status = (
+            "живой"
+            if status in {"working", "connected", "checked"}
+            else ("мёртвый" if status == "failed" else "не проверен")
+        )
         short_proxy = short_proxy_text(proxy_text, max_len=42)
 
         keyboard.append([
@@ -109,6 +125,7 @@ def build_account_proxy_select_keyboard(account_id: int, proxies: list[dict]) ->
         ])
 
     keyboard.append([InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")])
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -129,11 +146,15 @@ def build_account_check_result_text(account: dict, proxy: dict, result: dict) ->
     ui_status = "живой" if result.get("status") == "connected" else "мёртвый"
     final_url = result.get("final_url") or "—"
     error = result.get("error")
+    browser_engine = result.get("browser_engine") or account.get("browser_engine") or "—"
+    gologin_profile_id = result.get("gologin_profile_id") or account.get("gologin_profile_id") or "—"
 
     lines = [
         "🔎 Проверка аккаунта завершена\n",
         f"Аккаунт: {profile_name}",
         f"Статус: {ui_status}",
+        f"Engine: {browser_engine}",
+        f"GoLogin profile: {gologin_profile_id}",
         f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=60)}",
         f"Final URL: {final_url}",
     ]
@@ -148,13 +169,14 @@ async def show_accounts_screen(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     current_user = get_current_user(update)
     user_id = current_user["id"]
+
     accounts = get_user_accounts(user_id)
 
     if accounts:
-        text = "👤 Аккаунты OLX\n\n"
+        text = "📁 Аккаунты OLX\n\n"
     else:
         text = (
-            "👤 Аккаунты OLX\n\n"
+            "📁 Аккаунты OLX\n\n"
             "У тебя пока нет добавленных аккаунтов.\n\n"
             "Нажми «Добавить аккаунт», чтобы загрузить cookies."
         )
@@ -167,6 +189,7 @@ async def show_accounts_screen(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def show_account_card(query, user_id: int, account_id: int):
     account = get_account_by_id(user_id, account_id)
+
     if not account:
         await query.edit_message_text(
             "Аккаунт не найден.",
@@ -190,10 +213,15 @@ async def show_account_card(query, user_id: int, account_id: int):
         else:
             proxy_text = "не найден"
 
+    browser_engine = account.get("browser_engine") or "—"
+    gologin_profile_id = account.get("gologin_profile_id") or "—"
+
     await query.edit_message_text(
-        "📌 Карточка аккаунта\n\n"
+        "📄 Карточка аккаунта\n\n"
         f"Аккаунт: {profile_name}\n"
         f"Статус: {status}\n"
+        f"Engine: {browser_engine}\n"
+        f"GoLogin profile: {gologin_profile_id}\n"
         f"Прокси: {proxy_text}\n\n"
         f"Последняя проверка: {last_check_at}",
         reply_markup=build_account_card_keyboard(account_id, has_proxy=bool(account.get("proxy_id"))),
@@ -310,7 +338,9 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         proxy_id = account.get("proxy_id")
         if not proxy_id:
-            update_account_status(user_id, account_id, "failed")
+            update_account_status(user_id, account_id, "missing_proxy")
+            update_account_last_check(user_id, account_id)
+
             await query.edit_message_text(
                 "❌ У аккаунта не привязан прокси.\n\n"
                 "Сначала привяжи 1 прокси к этому аккаунту.",
@@ -323,7 +353,9 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         proxy = get_proxy_by_id(user_id, proxy_id)
         if not proxy:
-            update_account_status(user_id, account_id, "failed")
+            update_account_status(user_id, account_id, "proxy_not_found")
+            update_account_last_check(user_id, account_id)
+
             await query.edit_message_text(
                 "❌ Привязанный прокси не найден.\n\n"
                 "Привяжи другой прокси.",
@@ -338,8 +370,9 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         proxy_text = proxy.get("proxy_text")
 
         if not cookies_json:
-            update_account_status(user_id, account_id, "failed")
+            update_account_status(user_id, account_id, "missing_cookies")
             update_account_last_check(user_id, account_id)
+
             await query.edit_message_text(
                 "❌ У аккаунта отсутствуют cookies_json.",
                 reply_markup=InlineKeyboardMarkup([
@@ -355,24 +388,28 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Прокси: {short_proxy_text(proxy_text or '', max_len=50)}"
         )
 
+        result = await check_account_with_proxy(
+            cookies_json=cookies_json,
+            proxy_text=proxy_text,
+            headless=True,
+            user_id=user_id,
+            account_id=account_id,
+            olx_profile_name=account.get("olx_profile_name"),
+        )
+
         profile_name = (result.get("profile_name") or "").strip()
         if profile_name:
             update_account_profile_name(user_id, account_id, profile_name)
 
-        new_status = "connected" if result.get("status") == "connected" else "failed"
-
-        update_account_status(user_id, account_id, new_status)
+        result_status = (result.get("status") or "failed").strip().lower()
+        update_account_status(user_id, account_id, result_status)
         update_account_last_check(user_id, account_id)
         update_proxy_last_check(user_id, proxy["id"])
 
-        if new_status == "connected":
+        if result_status == "connected":
             update_proxy_status(user_id, proxy["id"], "working")
         else:
             update_proxy_status(user_id, proxy["id"], "failed")
-
-        profile_name = (result.get("profile_name") or "").strip()
-        if profile_name:
-            update_account_profile_name(user_id, account_id, profile_name)
 
         updated_account = get_account_by_id(user_id, account_id)
 
@@ -454,107 +491,93 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             for index, item in enumerate(accounts, start=1):
                 profile_name = account_display_name(item, fallback_index=index)
                 status = humanize_account_status(item.get("status"))
-                text += f"{index}. {profile_name} — {status}\n"
+                text += f"{index}. {profile_name} [{status}]\n"
         else:
-            text = "✅ Аккаунт удалён.\n\nУ тебя больше нет добавленных аккаунтов."
+            text = "✅ Аккаунт удалён.\n\nСписок аккаунтов теперь пуст."
 
         await query.edit_message_text(
-            text=text,
+            text,
             reply_markup=build_accounts_keyboard(accounts),
         )
         return
-
-
-async def save_new_account_from_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE, cookies_json: str):
-    current_user = get_current_user(update)
-    user_id = current_user["id"]
-
-    existing_accounts = get_user_accounts(user_id)
-    default_name = f"Аккаунт {len(existing_accounts) + 1}"
-
-    create_account(
-        user_id=user_id,
-        cookies_json=cookies_json,
-        status="new",
-        olx_profile_name=default_name,
-    )
-
-    context.user_data.pop("awaiting_account_cookies", None)
-
-    accounts = get_user_accounts(user_id)
-    text_lines = [
-        "✅ Аккаунт успешно добавлен.\n",
-        "Текущий список аккаунтов:\n",
-    ]
-
-    for index, account in enumerate(accounts, start=1):
-        profile_name = account_display_name(account, fallback_index=index)
-        status = humanize_account_status(account.get("status"))
-        text_lines.append(f"{index}. {profile_name} — {status}")
-
-    if update.message:
-        await update.message.reply_text(
-            "\n".join(text_lines),
-            reply_markup=build_accounts_keyboard(accounts),
-        )
 
 
 async def handle_account_cookies_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    cookies_json = parse_cookies_json(text)
-    if not cookies_json:
-        await update.message.reply_text(
-            "Не удалось распознать cookies JSON.\n\n"
-            "Пришли валидный JSON текстом."
-        )
-        return
-
-    account_id_to_update = context.user_data.get("awaiting_account_cookies_update")
     current_user = get_current_user(update)
     user_id = current_user["id"]
 
-    if account_id_to_update:
-        account = get_account_by_id(user_id, account_id_to_update)
-        if not account:
-            context.user_data.pop("awaiting_account_cookies_update", None)
-            await update.message.reply_text("Аккаунт для обновления не найден.")
+    if context.user_data.get("awaiting_account_cookies"):
+        normalized = parse_cookies_json(text)
+        if not normalized:
+            await update.message.reply_text(
+                "❌ Не удалось распознать cookies JSON.\n\n"
+                "Пришли корректный JSON текстом или .txt файлом."
+            )
             return
 
-        update_account_cookies(user_id, account_id_to_update, cookies_json)
-        update_account_status(user_id, account_id_to_update, "new")
-        context.user_data.pop("awaiting_account_cookies_update", None)
-
-        updated = get_account_by_id(user_id, account_id_to_update)
-        await update.message.reply_text(
-            "✅ Cookies обновлены.\n\n"
-            f"Аккаунт: {account_display_name(updated)}\n"
-            "Статус сброшен в «не проверен».",
-        )
+        create_account(user_id=user_id, cookies_json=normalized)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Аккаунт добавлен.")
         return
 
-    await save_new_account_from_cookies(update, context, cookies_json)
+    account_id = context.user_data.get("awaiting_account_cookies_update")
+    if account_id:
+        normalized = parse_cookies_json(text)
+        if not normalized:
+            await update.message.reply_text(
+                "❌ Не удалось распознать cookies JSON.\n\n"
+                "Пришли корректный JSON текстом или .txt файлом."
+            )
+            return
+
+        account = get_account_by_id(user_id, account_id)
+        if not account:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Аккаунт не найден.")
+            return
+
+        update_account_cookies(user_id, account_id, normalized)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Cookies обновлены.")
+        return
 
 
 async def handle_account_cookies_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.document:
-        return
+    current_user = get_current_user(update)
+    user_id = current_user["id"]
 
     document = update.message.document
-
-    if document.file_name and not document.file_name.lower().endswith(".txt"):
-        await update.message.reply_text(
-            "Поддерживается только .txt файл с JSON cookies внутри."
-        )
+    if not document:
         return
 
     file = await document.get_file()
-    file_bytes = await file.download_as_bytearray()
+    content = await file.download_as_bytearray()
 
     try:
-        text = file_bytes.decode("utf-8")
+        text = content.decode("utf-8")
     except UnicodeDecodeError:
-        await update.message.reply_text(
-            "Не удалось прочитать файл как UTF-8 текст."
-        )
+        await update.message.reply_text("❌ Файл должен быть в UTF-8.")
         return
 
-    await handle_account_cookies_text(update, context, text)
+    normalized = parse_cookies_json(text)
+    if not normalized:
+        await update.message.reply_text("❌ Не удалось распознать cookies JSON в файле.")
+        return
+
+    if context.user_data.get("awaiting_account_cookies"):
+        create_account(user_id=user_id, cookies_json=normalized)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Аккаунт добавлен.")
+        return
+
+    account_id = context.user_data.get("awaiting_account_cookies_update")
+    if account_id:
+        account = get_account_by_id(user_id, account_id)
+        if not account:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Аккаунт не найден.")
+            return
+
+        update_account_cookies(user_id, account_id, normalized)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Cookies обновлены.")

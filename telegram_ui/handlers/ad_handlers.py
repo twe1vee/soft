@@ -10,6 +10,7 @@ from db import (
     create_message,
     create_pending_action,
     get_account_by_id,
+    get_active_template,
     get_ad_by_ad_id,
     get_ad_by_id,
     get_proxy_by_id,
@@ -44,7 +45,16 @@ def humanize_account_status(status: str | None) -> str:
     value = (status or "").strip().lower()
     if value in {"connected", "working", "checked"}:
         return "живой"
-    if value in {"failed", "proxy_failed"}:
+    if value in {
+        "failed",
+        "proxy_failed",
+        "invalid_cookies",
+        "missing_proxy",
+        "proxy_not_found",
+        "missing_cookies",
+        "cloudfront_blocked",
+        "login_required_or_chat_blocked",
+    }:
         return "мёртвый"
     return "не проверен"
 
@@ -63,7 +73,6 @@ def sort_accounts_for_send(accounts: list[dict]) -> list[dict]:
         "new": 2,
         "failed": 9,
     }
-
     return sorted(
         accounts,
         key=lambda a: (
@@ -85,7 +94,6 @@ def build_account_select_keyboard(
         status = humanize_account_status(account.get("status"))
         proxy_id = account.get("proxy_id")
         proxy_suffix = " | без proxy"
-
         if proxy_id:
             proxy_suffix = " | proxy привязан"
 
@@ -117,6 +125,8 @@ def build_send_result_text(ad: dict, account: dict, proxy: dict, result: dict) -
         "",
         "📤 Результат отправки",
         f"Аккаунт: {profile_name}",
+        f"Engine: {result.get('browser_engine') or account.get('browser_engine') or 'gologin'}",
+        f"GoLogin profile: {result.get('gologin_profile_id') or account.get('gologin_profile_id') or '—'}",
         f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=50)}",
         f"Статус отправки: {status}",
         f"Final URL: {final_url}",
@@ -194,7 +204,7 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             keyboard = build_action_keyboard(existing_ad["id"], action_id)
 
             extra_note = (
-                "\n\n👁 Это объявление вы уже смотрели ранее."
+                "\n\n Это объявление вы уже смотрели ранее."
                 f"\nПросмотров в системе: {global_views}"
             )
 
@@ -280,7 +290,6 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data.pop("editing_action_id", None)
 
     keyboard = build_action_keyboard(editing_ad_id, editing_action_id)
-
     await update.message.reply_text(
         "✏️ Черновик обновлен.\n\n" + build_ad_caption(ad),
         reply_markup=keyboard,
@@ -421,8 +430,7 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         await query.edit_message_text(
-            build_ad_caption(ad)
-            + "\n\n⏳ Отправляю сообщение через реальный браузер...\n"
+            build_ad_caption(ad) + "\n\n⏳ Отправляю сообщение через реальный браузер...\n"
             + f"Аккаунт: {account_display_name(account)}\n"
             + f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=50)}"
         )
@@ -433,6 +441,9 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             ad_url=ad_url,
             message_text=draft_text,
             headless=True,
+            user_id=user_id,
+            account_id=account_id,
+            olx_profile_name=account.get("olx_profile_name"),
         )
 
         send_status = result.get("status") or "unknown_error"
