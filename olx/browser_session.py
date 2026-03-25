@@ -3,10 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page
 
-from olx.cookies  import normalize_cookies
-from olx.proxy_bridge import build_bridge_proxy_settings
+from olx.browser_session_gologin import open_gologin_browser_context
 
 
 PT_HOME_URL = "https://www.olx.pt/"
@@ -19,43 +18,19 @@ async def open_olx_browser_context(
     proxy_text: str,
     *,
     headless: bool = True,
-) -> AsyncIterator[tuple[Browser, BrowserContext]]:
-    """
-    Универсальный браузерный контекст для OLX:
-    - строит bridge proxy
-    - запускает Playwright
-    - добавляет cookies
-    """
-    cookies = normalize_cookies(cookies_json)
-    bridge_proxy = build_bridge_proxy_settings(proxy_text)
-
-    browser: Browser | None = None
-    context: BrowserContext | None = None
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=headless,
-                proxy=bridge_proxy,
-            )
-
-            context = await browser.new_context()
-            await context.add_cookies(cookies)
-
-            yield browser, context
-
-    finally:
-        try:
-            if context:
-                await context.close()
-        except Exception:
-            pass
-
-        try:
-            if browser:
-                await browser.close()
-        except Exception:
-            pass
+    user_id: int | None = None,
+    account_id: int | None = None,
+    olx_profile_name: str | None = None,
+) -> AsyncIterator[tuple[Browser, BrowserContext, dict]]:
+    async with open_gologin_browser_context(
+        cookies_json=cookies_json,
+        proxy_text=proxy_text,
+        headless=headless,
+        user_id=user_id,
+        account_id=account_id,
+        olx_profile_name=olx_profile_name,
+    ) as session:
+        yield session
 
 
 async def open_olx_page(

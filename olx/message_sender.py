@@ -7,7 +7,6 @@ from olx.browser_session import (
     open_olx_browser_context,
     open_olx_page,
 )
-from olx.proxy_bridge import build_bridge_proxy_settings
 
 from olx.message_sender_chat import (
     click_chat_button,
@@ -40,10 +39,17 @@ async def send_message_to_ad(
     message_text: str,
     *,
     headless: bool = True,
+    user_id: int | None = None,
+    account_id: int | None = None,
+    olx_profile_name: str | None = None,
 ) -> dict:
     result = base_result()
     result["ad_url"] = ad_url
     result["message_length"] = len(message_text or "")
+    result["browser_engine"] = "gologin"
+    result["gologin_profile_id"] = None
+    result["gologin_profile_name"] = None
+    result["debugger_address"] = None
 
     if not (ad_url or "").strip():
         result["status"] = "invalid_input"
@@ -56,19 +62,19 @@ async def send_message_to_ad(
         return result
 
     try:
-        bridge_proxy = build_bridge_proxy_settings(proxy_text)
-        result["bridge_server"] = bridge_proxy["server"]
-    except Exception as exc:
-        result["status"] = "invalid_input"
-        result["error"] = str(exc)
-        return result
-
-    try:
         async with open_olx_browser_context(
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             headless=headless,
-        ) as (_, context):
+            user_id=user_id,
+            account_id=account_id,
+            olx_profile_name=olx_profile_name,
+        ) as (_, context, runtime):
+            result["browser_engine"] = runtime.get("browser_engine", "gologin")
+            result["gologin_profile_id"] = runtime.get("gologin_profile_id")
+            result["gologin_profile_name"] = runtime.get("gologin_profile_name")
+            result["debugger_address"] = runtime.get("debugger_address")
+
             page = await open_olx_page(
                 context,
                 ad_url,
@@ -210,25 +216,8 @@ async def send_message_to_ad(
         return result
 
     except Exception as exc:
-        message = str(exc).lower()
         result["error"] = str(exc)
-
-        proxy_error_markers = [
-            "proxy",
-            "tunnel",
-            "timeout",
-            "net::err_proxy",
-            "browser has been closed",
-            "socks",
-            "connection refused",
-            "connection reset",
-            "net::err",
-        ]
-
-        if any(marker in message for marker in proxy_error_markers):
-            result["status"] = "proxy_failed"
-        else:
-            result["status"] = "browser_failed"
+        result["status"] = "browser_failed"
 
         try:
             if "page" in locals() and page is not None:

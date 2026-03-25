@@ -108,6 +108,9 @@ def init_db():
             cookies_json TEXT NOT NULL,
             proxy_id INTEGER,
             status TEXT NOT NULL DEFAULT 'new',
+            browser_engine TEXT NOT NULL DEFAULT 'gologin',
+            gologin_profile_id TEXT,
+            gologin_profile_name TEXT,
             last_check_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -125,6 +128,15 @@ def init_db():
     if not _column_exists(cursor, "accounts", "updated_at"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
+    if not _column_exists(cursor, "accounts", "browser_engine"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN browser_engine TEXT NOT NULL DEFAULT 'gologin'")
+
+    if not _column_exists(cursor, "accounts", "gologin_profile_id"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_id TEXT")
+
+    if not _column_exists(cursor, "accounts", "gologin_profile_name"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_name TEXT")
+
     if not _column_exists(cursor, "proxies", "created_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -141,6 +153,8 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_user_status ON accounts(user_id, status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_proxy_id ON accounts(proxy_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_gologin_profile_id ON accounts(gologin_profile_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_browser_engine ON accounts(browser_engine)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_id ON proxies(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_status ON proxies(user_id, status)")
 

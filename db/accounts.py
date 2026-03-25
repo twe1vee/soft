@@ -10,6 +10,7 @@ def create_account(
     cookies_json: str,
     status: str = "new",
     olx_profile_name: str | None = None,
+    browser_engine: str = "gologin",
 ) -> int:
     conn = get_connection()
     cursor = conn.cursor()
@@ -19,10 +20,11 @@ def create_account(
             user_id,
             olx_profile_name,
             cookies_json,
-            status
+            status,
+            browser_engine
         )
-        VALUES (?, ?, ?, ?)
-    """, (user_id, olx_profile_name, cookies_json, status))
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, olx_profile_name, cookies_json, status, browser_engine))
 
     account_id = cursor.lastrowid
     conn.commit()
@@ -143,6 +145,65 @@ def mark_account_checked(user_id: int, account_id: int):
         UPDATE accounts
         SET status = 'checked',
             last_check_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+    """, (account_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def update_account_gologin_profile(
+    user_id: int,
+    account_id: int,
+    gologin_profile_id: str | None,
+    gologin_profile_name: str | None = None,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE accounts
+        SET gologin_profile_id = ?,
+            gologin_profile_name = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+    """, (gologin_profile_id, gologin_profile_name, account_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def update_account_browser_engine(
+    user_id: int,
+    account_id: int,
+    browser_engine: str,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE accounts
+        SET browser_engine = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+    """, (browser_engine, account_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def clear_account_gologin_profile(
+    user_id: int,
+    account_id: int,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE accounts
+        SET gologin_profile_id = NULL,
+            gologin_profile_name = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND user_id = ?
     """, (account_id, user_id))
