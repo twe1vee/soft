@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 from olx.browser_session import PT_HOME_URL, dismiss_cookie_banner_if_present
-from olx.proxy_bridge import build_bridge_proxy_settings
+from olx.profile_manager_gologin import (
+    build_gologin_client,
+    create_temporary_proxy_profile,
+    delete_gologin_profile,
+)
 
 
 def _looks_blocked(title: str, body_text: str, url: str) -> bool:
@@ -21,6 +27,66 @@ def _looks_blocked(title: str, body_text: str, url: str) -> bool:
     return any(marker in haystack for marker in markers)
 
 
+def _to_cdp_endpoint(debugger_address: str) -> str:
+    raw = (debugger_address or "").strip()
+    if not raw:
+        raise RuntimeError("GoLogin вернул пустой debugger address")
+
+    if raw.startswith(("http://", "https://", "ws://", "wss://")):
+        return raw
+
+    return f"http://{raw}"
+
+
+def _classify_proxy_error(error_text: str) -> tuple[str, str]:
+    lowered = (error_text or "").lower()
+
+    fatal_profile_markers = [
+        "profile stopped",
+        "unable to open database file",
+        "target page, context or browser has been closed",
+        "browser has been closed",
+        "context closed",
+        "connection closed",
+        "net::err_proxy",
+        "proxy check failed",
+        "proxy error",
+        "proxy authentication required",
+        "407",
+        "remote end closed connection without response",
+        "connection aborted",
+        "connection refused",
+        "timeout",
+        "timed out",
+    ]
+
+    for marker in fatal_profile_markers:
+        if marker in lowered:
+            return "failed", error_text
+
+    if "cloudfront" in lowered or "access denied" in lowered:
+        return "failed", "OLX/CloudFront blocked the request"
+
+    return "failed", error_text or "Неизвестная ошибка проверки прокси"
+
+
+async def _assert_browser_alive(browser, context, page) -> None:
+    try:
+        if browser is None:
+            raise RuntimeError("Browser не был создан")
+        if context is None:
+            raise RuntimeError("Context не был создан")
+        if page is None:
+            raise RuntimeError("Page не была создана")
+
+        # Простая проверка, что браузер и страница ещё живы
+        await page.evaluate("() => document.readyState")
+    except PlaywrightError as exc:
+        raise RuntimeError(f"Профиль остановился во время проверки: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Профиль остановился во время проверки: {exc}") from exc
+
+
 async def check_proxy_alive(
     proxy_text: str,
     *,
@@ -31,73 +97,114 @@ async def check_proxy_alive(
         "status": "failed",
         "final_url": None,
         "page_title": None,
-        "bridge_server": None,
+        "browser_engine": "gologin",
+        "gologin_profile_id": None,
+        "gologin_profile_name": None,
+        "debugger_address": None,
         "error": None,
     }
 
-    try:
-        bridge_proxy = build_bridge_proxy_settings(proxy_text)
-        result["bridge_server"] = bridge_proxy["server"]
-    except Exception as exc:
+    if not (proxy_text or "").strip():
         result["status"] = "failed"
-        result["error"] = str(exc)
+        result["error"] = "Пустой proxy_text"
         return result
 
+    temp_profile_id: str | None = None
+    gl = None
+    playwright = None
     browser = None
     context = None
+    page = None
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=headless,
-                proxy=bridge_proxy,
-            )
+        runtime = await asyncio.to_thread(
+            create_temporary_proxy_profile,
+            proxy_text=proxy_text,
+            profile_name="OLX Proxy Check",
+        )
+
+        temp_profile_id = runtime["gologin_profile_id"]
+        result["gologin_profile_id"] = temp_profile_id
+        result["gologin_profile_name"] = runtime.get("gologin_profile_name")
+
+        gl = build_gologin_client(
+            profile_id=temp_profile_id,
+            headless=headless,
+        )
+
+        debugger_address = await asyncio.to_thread(gl.start)
+        result["debugger_address"] = debugger_address
+
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.connect_over_cdp(
+            _to_cdp_endpoint(debugger_address)
+        )
+
+        if browser.contexts:
+            context = browser.contexts[0]
+        else:
             context = await browser.new_context()
-            page = await context.new_page()
 
-            await page.goto(PT_HOME_URL, wait_until="domcontentloaded", timeout=90000)
-            await page.wait_for_timeout(3000)
+        page = await context.new_page()
+        await page.goto(PT_HOME_URL, wait_until="domcontentloaded", timeout=90000)
+        await page.wait_for_timeout(3000)
 
-            try:
-                await dismiss_cookie_banner_if_present(page)
-            except Exception:
-                pass
+        await _assert_browser_alive(browser, context, page)
 
-            await page.wait_for_timeout(1000)
+        try:
+            await dismiss_cookie_banner_if_present(page)
+        except Exception:
+            pass
 
-            result["final_url"] = page.url
+        await page.wait_for_timeout(1000)
+        await _assert_browser_alive(browser, context, page)
 
-            try:
-                result["page_title"] = await page.title()
-            except Exception:
-                result["page_title"] = None
+        result["final_url"] = page.url
 
-            try:
-                body_text = await page.locator("body").inner_text(timeout=5000)
-            except Exception:
-                body_text = ""
+        try:
+            result["page_title"] = await page.title()
+        except Exception:
+            result["page_title"] = None
 
-            if _looks_blocked(result["page_title"] or "", body_text or "", page.url or ""):
-                result["status"] = "failed"
-                result["error"] = "OLX/CloudFront blocked the request"
-                return result
+        try:
+            body_text = await page.locator("body").inner_text(timeout=5000)
+        except Exception as exc:
+            raise RuntimeError(f"Не удалось прочитать body страницы: {exc}") from exc
 
-            body_len = len((body_text or "").strip())
-            if page.url and body_len > 100:
-                result["ok"] = True
-                result["status"] = "working"
-                return result
+        await _assert_browser_alive(browser, context, page)
 
+        if _looks_blocked(result["page_title"] or "", body_text or "", page.url or ""):
             result["status"] = "failed"
-            result["error"] = "Proxy opened page, but OLX content was not confirmed"
+            result["error"] = "OLX/CloudFront blocked the request"
             return result
 
+        body_len = len((body_text or "").strip())
+        if not page.url or body_len <= 100:
+            result["status"] = "failed"
+            result["error"] = "Proxy opened profile, but OLX content was not confirmed"
+            return result
+
+        # Дополнительная стабильность: профиль не должен отвалиться сразу после загрузки
+        await page.wait_for_timeout(2000)
+        await _assert_browser_alive(browser, context, page)
+
+        result["ok"] = True
+        result["status"] = "working"
+        return result
+
     except Exception as exc:
-        result["status"] = "failed"
-        result["error"] = str(exc)
+        status, human_error = _classify_proxy_error(str(exc))
+        result["status"] = status
+        result["error"] = human_error
         return result
 
     finally:
+        try:
+            if page:
+                await page.close()
+        except Exception:
+            pass
+
         try:
             if context:
                 await context.close()
@@ -107,5 +214,23 @@ async def check_proxy_alive(
         try:
             if browser:
                 await browser.close()
+        except Exception:
+            pass
+
+        try:
+            if playwright:
+                await playwright.stop()
+        except Exception:
+            pass
+
+        try:
+            if gl:
+                await asyncio.to_thread(gl.stop)
+        except Exception:
+            pass
+
+        try:
+            if temp_profile_id:
+                await asyncio.to_thread(delete_gologin_profile, temp_profile_id)
         except Exception:
             pass

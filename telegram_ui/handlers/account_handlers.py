@@ -1,6 +1,7 @@
 import json
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from db import (
@@ -19,7 +20,24 @@ from db import (
     update_proxy_status,
 )
 from olx.account_session import check_account_with_proxy
+from olx.profile_manager_gologin import (
+    delete_account_gologin_profile,
+    sync_account_profile_cookies,
+)
 from telegram_ui.handlers.common import get_current_user
+
+
+async def safe_edit_message_text(query, text: str, reply_markup=None, **kwargs):
+    try:
+        await query.edit_message_text(
+            text=text,
+            reply_markup=reply_markup,
+            **kwargs,
+        )
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        raise
 
 
 def account_display_name(account: dict, fallback_index: int | None = None) -> str:
@@ -46,6 +64,7 @@ def humanize_account_status(status: str | None) -> str:
         "missing_cookies",
         "cloudfront_blocked",
         "login_required_or_chat_blocked",
+        "not_logged_in",
     }:
         return "мёртвый"
 
@@ -181,7 +200,8 @@ async def show_accounts_screen(update: Update, context: ContextTypes.DEFAULT_TYP
             "Нажми «Добавить аккаунт», чтобы загрузить cookies."
         )
 
-    await query.edit_message_text(
+    await safe_edit_message_text(
+        query,
         text=text,
         reply_markup=build_accounts_keyboard(accounts),
     )
@@ -191,7 +211,8 @@ async def show_account_card(query, user_id: int, account_id: int):
     account = get_account_by_id(user_id, account_id)
 
     if not account:
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "Аккаунт не найден.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -216,7 +237,8 @@ async def show_account_card(query, user_id: int, account_id: int):
     browser_engine = account.get("browser_engine") or "—"
     gologin_profile_id = account.get("gologin_profile_id") or "—"
 
-    await query.edit_message_text(
+    await safe_edit_message_text(
+        query,
         "📄 Карточка аккаунта\n\n"
         f"Аккаунт: {profile_name}\n"
         f"Статус: {status}\n"
@@ -237,7 +259,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.clear()
         context.user_data["awaiting_account_cookies"] = True
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "➕ Добавление аккаунта\n\n"
             "Пришли cookies одним из способов:\n"
             "1. JSON текстом в сообщении\n"
@@ -260,7 +283,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Аккаунт не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -271,7 +295,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         proxies = get_user_proxies(user_id)
         if not proxies:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "❌ У тебя пока нет прокси для привязки.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
@@ -280,7 +305,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             f"🔗 Выбери прокси для аккаунта «{account_display_name(account)}»:",
             reply_markup=build_account_proxy_select_keyboard(account_id, proxies),
         )
@@ -293,12 +319,13 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         account = get_account_by_id(user_id, account_id)
         if not account:
-            await query.edit_message_text("Аккаунт не найден.")
+            await safe_edit_message_text(query, "Аккаунт не найден.")
             return
 
         proxy = get_proxy_by_id(user_id, proxy_id)
         if not proxy:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Прокси не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
@@ -315,7 +342,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text("Аккаунт не найден.")
+            await safe_edit_message_text(query, "Аккаунт не найден.")
             return
 
         update_account_proxy(user_id, account_id, None)
@@ -327,7 +354,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Аккаунт не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -341,7 +369,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             update_account_status(user_id, account_id, "missing_proxy")
             update_account_last_check(user_id, account_id)
 
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "❌ У аккаунта не привязан прокси.\n\n"
                 "Сначала привяжи 1 прокси к этому аккаунту.",
                 reply_markup=InlineKeyboardMarkup([
@@ -356,7 +385,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             update_account_status(user_id, account_id, "proxy_not_found")
             update_account_last_check(user_id, account_id)
 
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "❌ Привязанный прокси не найден.\n\n"
                 "Привяжи другой прокси.",
                 reply_markup=InlineKeyboardMarkup([
@@ -373,7 +403,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             update_account_status(user_id, account_id, "missing_cookies")
             update_account_last_check(user_id, account_id)
 
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "❌ У аккаунта отсутствуют cookies_json.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
@@ -382,7 +413,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "⏳ Проверяю аккаунт через браузер и привязанный proxy...\n\n"
             f"Аккаунт: {account_display_name(account)}\n"
             f"Прокси: {short_proxy_text(proxy_text or '', max_len=50)}"
@@ -413,7 +445,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         updated_account = get_account_by_id(user_id, account_id)
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             build_account_check_result_text(updated_account, proxy, result),
             reply_markup=build_account_card_keyboard(account_id, has_proxy=True),
         )
@@ -424,7 +457,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Аккаунт не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -436,7 +470,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.clear()
         context.user_data["awaiting_account_cookies_update"] = account_id
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "♻️ Обновление cookies\n\n"
             "Пришли новые cookies:\n"
             "1. JSON текстом\n"
@@ -454,7 +489,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Аккаунт не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -463,7 +499,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             f"Ты точно хочешь удалить аккаунт «{account_display_name(account)}»?",
             reply_markup=build_account_delete_confirm_keyboard(account_id),
         )
@@ -474,7 +511,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await query.edit_message_text(
+            await safe_edit_message_text(
+                query,
                 "Аккаунт уже не найден.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
@@ -483,19 +521,31 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
+        cleanup_note = ""
+        try:
+            cleanup_result = delete_account_gologin_profile(
+                user_id=user_id,
+                account_id=account_id,
+            )
+            if cleanup_result.get("deleted"):
+                cleanup_note = "\nGoLogin profile тоже удалён."
+        except Exception as exc:
+            cleanup_note = f"\nПрофиль GoLogin удалить не удалось: {exc}"
+
         delete_account(user_id, account_id)
         accounts = get_user_accounts(user_id)
 
         if accounts:
-            text = "✅ Аккаунт удалён.\n\nОставшиеся аккаунты:\n\n"
+            text = "✅ Аккаунт удалён." + cleanup_note + "\n\nОставшиеся аккаунты:\n\n"
             for index, item in enumerate(accounts, start=1):
                 profile_name = account_display_name(item, fallback_index=index)
                 status = humanize_account_status(item.get("status"))
                 text += f"{index}. {profile_name} [{status}]\n"
         else:
-            text = "✅ Аккаунт удалён.\n\nСписок аккаунтов теперь пуст."
+            text = "✅ Аккаунт удалён." + cleanup_note + "\n\nСписок аккаунтов теперь пуст."
 
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             text,
             reply_markup=build_accounts_keyboard(accounts),
         )
@@ -537,8 +587,21 @@ async def handle_account_cookies_text(update: Update, context: ContextTypes.DEFA
             return
 
         update_account_cookies(user_id, account_id, normalized)
+
+        sync_note = ""
+        try:
+            sync_result = sync_account_profile_cookies(
+                user_id=user_id,
+                account_id=account_id,
+                cookies_json=normalized,
+            )
+            if sync_result.get("synced"):
+                sync_note = "\nCookies сразу синхронизированы в GoLogin профиль."
+        except Exception as exc:
+            sync_note = f"\nНе удалось сразу синхронизировать cookies в GoLogin: {exc}"
+
         context.user_data.clear()
-        await update.message.reply_text("✅ Cookies обновлены.")
+        await update.message.reply_text("✅ Cookies обновлены." + sync_note)
         return
 
 
@@ -579,5 +642,18 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
             return
 
         update_account_cookies(user_id, account_id, normalized)
+
+        sync_note = ""
+        try:
+            sync_result = sync_account_profile_cookies(
+                user_id=user_id,
+                account_id=account_id,
+                cookies_json=normalized,
+            )
+            if sync_result.get("synced"):
+                sync_note = "\nCookies сразу синхронизированы в GoLogin профиль."
+        except Exception as exc:
+            sync_note = f"\nНе удалось сразу синхронизировать cookies в GoLogin: {exc}"
+
         context.user_data.clear()
-        await update.message.reply_text("✅ Cookies обновлены.")
+        await update.message.reply_text("✅ Cookies обновлены." + sync_note)

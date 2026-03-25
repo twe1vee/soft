@@ -119,6 +119,32 @@ def detect_logged_in_from_page(
     return False
 
 
+def classify_launch_error(error_text: str) -> tuple[str, str]:
+    lowered = (error_text or "").lower()
+
+    proxy_markers = [
+        "proxy check failed",
+        "proxy error",
+        "407",
+        "proxy authentication required",
+        "socks5 proxy rejected",
+        "check timeout exceeded",
+        "proxy connection timed out",
+        "proxy server doesn't respond",
+        "remote end closed connection without response",
+        "eaccess",
+        "certificate has expired",
+    ]
+
+    if any(marker in lowered for marker in proxy_markers):
+        return "proxy_failed", "GoLogin не смог запустить профиль через указанный прокси"
+
+    if "cloudfront" in lowered or "access denied" in lowered:
+        return "cloudfront_blocked", "OLX/CloudFront заблокировал запрос"
+
+    return "failed", error_text or "Неизвестная ошибка запуска профиля"
+
+
 async def check_account_with_proxy(
     cookies_json: str,
     proxy_text: str,
@@ -205,6 +231,15 @@ async def check_account_with_proxy(
             if profile_name:
                 result["profile_name"] = profile_name
 
+            if detect_cloudfront_or_block_page(
+                result["final_url"] or "",
+                result["page_title"] or "",
+                body_text,
+            ):
+                result["status"] = "cloudfront_blocked"
+                result["error"] = "OLX/CloudFront заблокировал страницу"
+                return result
+
             is_logged_in = detect_logged_in_from_page(
                 url=page.url,
                 title=result["page_title"] or "",
@@ -217,20 +252,12 @@ async def check_account_with_proxy(
                 result["status"] = "connected"
                 return result
 
-            if detect_cloudfront_or_block_page(
-                result["final_url"] or "",
-                result["page_title"] or "",
-                body_text,
-            ):
-                result["status"] = "cloudfront_blocked"
-                result["error"] = "OLX/CloudFront заблокировал страницу"
-                return result
-
-            result["status"] = "failed"
-            result["error"] = "OLX account page did not confirm authenticated session"
+            result["status"] = "not_logged_in"
+            result["error"] = "OLX account page opened, но сессия не подтверждена как авторизованная"
             return result
 
     except Exception as exc:
-        result["error"] = str(exc)
-        result["status"] = "failed"
+        status, human_error = classify_launch_error(str(exc))
+        result["status"] = status
+        result["error"] = human_error
         return result
