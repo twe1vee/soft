@@ -3,6 +3,21 @@ from db.database import get_connection
 def _row_to_dict(row):
     return dict(row) if row else None
 
+def get_active_users() -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT *
+        FROM users
+        WHERE is_active = 1
+        ORDER BY id ASC
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
 def get_user_by_telegram_id(telegram_id: int) -> dict | None:
     conn = get_connection()
     cursor = conn.cursor()

@@ -19,7 +19,8 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id TEXT NOT NULL UNIQUE,
@@ -29,9 +30,11 @@ def init_db():
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS ads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -49,9 +52,11 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id),
             UNIQUE(user_id, ad_id)
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS pending_actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ad_id INTEGER NOT NULL,
@@ -62,9 +67,11 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (ad_id) REFERENCES ads(id)
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ad_id INTEGER NOT NULL,
@@ -74,9 +81,11 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (ad_id) REFERENCES ads(id)
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL UNIQUE,
@@ -85,9 +94,11 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS proxies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -98,9 +109,11 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -117,7 +130,59 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (proxy_id) REFERENCES proxies(id)
         )
-    """)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            ad_id INTEGER,
+            conversation_key TEXT NOT NULL,
+            conversation_url TEXT,
+            seller_name TEXT,
+            ad_title TEXT,
+            ad_url TEXT,
+            ad_external_id TEXT,
+            last_message_preview TEXT,
+            last_message_at_hint TEXT,
+            is_unread INTEGER NOT NULL DEFAULT 0,
+            last_incoming_message_key TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            FOREIGN KEY (ad_id) REFERENCES ads(id),
+            UNIQUE(account_id, conversation_key)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            external_message_key TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            sender_name TEXT,
+            text TEXT NOT NULL,
+            is_unread INTEGER NOT NULL DEFAULT 0,
+            sent_at_hint TEXT,
+            status TEXT NOT NULL DEFAULT 'new',
+            notified_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            UNIQUE(conversation_id, external_message_key)
+        )
+        """
+    )
 
     if not _column_exists(cursor, "accounts", "proxy_id"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN proxy_id INTEGER")
@@ -143,6 +208,21 @@ def init_db():
     if not _column_exists(cursor, "proxies", "updated_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
+    if not _column_exists(cursor, "conversations", "ad_external_id"):
+        cursor.execute("ALTER TABLE conversations ADD COLUMN ad_external_id TEXT")
+
+    if not _column_exists(cursor, "conversations", "last_message_at_hint"):
+        cursor.execute("ALTER TABLE conversations ADD COLUMN last_message_at_hint TEXT")
+
+    if not _column_exists(cursor, "conversations", "last_incoming_message_key"):
+        cursor.execute("ALTER TABLE conversations ADD COLUMN last_incoming_message_key TEXT")
+
+    if not _column_exists(cursor, "conversation_messages", "notified_at"):
+        cursor.execute("ALTER TABLE conversation_messages ADD COLUMN notified_at TIMESTAMP")
+
+    if not _column_exists(cursor, "conversation_messages", "updated_at"):
+        cursor.execute("ALTER TABLE conversation_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_id ON ads(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_status ON ads(user_id, status)")
@@ -157,6 +237,19 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_browser_engine ON accounts(browser_engine)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_id ON proxies(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_status ON proxies(user_id, status)")
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_account_id ON conversations(account_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_status ON conversations(user_id, status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_account_unread ON conversations(account_id, is_unread)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_key ON conversations(account_id, conversation_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id ON conversation_messages(conversation_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_account_id ON conversation_messages(account_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversation_messages_notify ON conversation_messages(notified_at)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_key ON "
+        "conversation_messages(conversation_id, external_message_key)"
+    )
 
     conn.commit()
     conn.close()

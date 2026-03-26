@@ -1,5 +1,6 @@
 import logging
 import os
+from olx.dialogs_jobs import start_dialogs_jobs
 
 from dotenv import load_dotenv
 from telegram import BotCommand, MenuButtonCommands
@@ -23,6 +24,7 @@ from telegram_ui.handlers import (
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+start_dialogs_jobs(application)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

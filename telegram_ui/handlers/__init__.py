@@ -1,5 +1,5 @@
 import re
-
+from telegram_ui.handlers.dialog_handlers import handle_dialog_callback
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram_ui.handlers.proxy_handlers import (

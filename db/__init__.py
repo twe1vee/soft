@@ -63,11 +63,18 @@ from .proxies import (
     delete_proxy,
 )
 
+from .users import (
+    get_user_by_telegram_id,
+    create_user,
+    get_or_create_user,
+    get_active_users,
+)
+
 __all__ = [
     "init_db",
     "get_connection",
     "DB_FILE",
-
+    "get_active_users",
     "get_user_by_telegram_id",
     "create_user",
     "get_or_create_user",

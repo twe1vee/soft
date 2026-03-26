@@ -4,7 +4,6 @@ from typing import Any
 
 from olx.message_sender_debug import first_non_empty_text
 
-
 MESSAGE_INPUT_SELECTORS = [
     "#chatPortalRoot textarea",
     "#root-portal textarea",
@@ -86,22 +85,108 @@ BLOCKING_HINT_SELECTORS = [
 
 def _chat_button_candidates(page):
     return [
-        page.locator('[data-testid="chat-button"]').first,
-        page.locator('[data-testid*="chat-button"]').first,
-        page.get_by_role("button", name="Enviar mensagem").first,
-        page.locator("button:has-text('Enviar mensagem')").first,
-        page.locator("a:has-text('Enviar mensagem')").first,
-        page.locator("text=Enviar mensagem").first,
-        page.get_by_role("button", name="Chat").first,
-        page.locator("button:has-text('Chat')").first,
-        page.locator("a:has-text('Chat')").first,
-        page.get_by_role("button", name="Contactar").first,
-        page.locator("button:has-text('Contactar')").first,
-        page.locator("button:has-text('Contactar anunciante')").first,
-        page.locator("a:has-text('Contactar anunciante')").first,
-        page.locator("button:has-text('Mensagem')").first,
-        page.locator("a:has-text('Mensagem')").first,
+        (
+            "seller_card_chat_button",
+            page.locator('[data-cy="seller_card"] [data-testid="chat-button"]').first,
+        ),
+        (
+            "ad_action_box_chat_button",
+            page.locator('[data-testid="ad-action-box"] [data-testid="chat-button"]').first,
+        ),
+        (
+            "generic_chat_button_enviar",
+            page.locator('button[data-testid="chat-button"]').filter(has_text="Enviar mensagem").first,
+        ),
+        (
+            "generic_chat_button_contactar",
+            page.locator('button[data-testid="chat-button"]').filter(has_text="Contactar").first,
+        ),
+        (
+            "role_button_enviar",
+            page.get_by_role("button", name="Enviar mensagem").first,
+        ),
+        (
+            "button_text_enviar",
+            page.locator("button:has-text('Enviar mensagem')").first,
+        ),
     ]
+
+
+async def collect_element_debug(page, locator, label: str) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "label": label,
+        "count": 0,
+        "visible": None,
+        "enabled": None,
+        "text": None,
+        "data_testid": None,
+        "href": None,
+        "class": None,
+        "bounding_box": None,
+        "click_point": None,
+        "element_from_point": None,
+        "outer_html": None,
+    }
+
+    try:
+        info["count"] = await locator.count()
+    except Exception as exc:
+        info["error"] = f"count_failed: {exc}"
+        return info
+
+    if info["count"] == 0:
+        return info
+
+    el = locator.first
+
+    try:
+        info["visible"] = await el.is_visible()
+    except Exception:
+        pass
+
+    try:
+        info["enabled"] = await el.is_enabled()
+    except Exception:
+        pass
+
+    try:
+        info["text"] = first_non_empty_text(await el.inner_text())
+    except Exception:
+        pass
+
+    try:
+        info["data_testid"] = await el.get_attribute("data-testid")
+        info["href"] = await el.get_attribute("href")
+        info["class"] = await el.get_attribute("class")
+        info["outer_html"] = await el.evaluate("(node) => node.outerHTML")
+    except Exception:
+        pass
+
+    try:
+        box = await el.bounding_box()
+        info["bounding_box"] = box
+        if box:
+            x = box["x"] + box["width"] / 2
+            y = box["y"] + box["height"] / 2
+            info["click_point"] = {"x": x, "y": y}
+            info["element_from_point"] = await page.evaluate(
+                """([x, y]) => {
+                    const el = document.elementFromPoint(x, y);
+                    if (!el) return null;
+                    return {
+                        tag: el.tagName,
+                        text: (el.innerText || "").trim().slice(0, 200),
+                        dataTestid: el.getAttribute("data-testid"),
+                        className: String(el.className || "").slice(0, 300),
+                        outerHTML: (el.outerHTML || "").slice(0, 1500)
+                    };
+                }""",
+                [x, y],
+            )
+    except Exception:
+        pass
+
+    return info
 
 
 async def has_chat_root(page) -> bool:
@@ -177,7 +262,7 @@ async def find_message_input(page):
 
 
 async def get_chat_button_debug(page) -> tuple[bool | None, str | None]:
-    for locator in _chat_button_candidates(page):
+    for _, locator in _chat_button_candidates(page):
         try:
             if await locator.count() == 0:
                 continue
@@ -202,8 +287,17 @@ async def get_chat_button_debug(page) -> tuple[bool | None, str | None]:
     return None, None
 
 
-async def click_chat_button(page) -> bool:
-    for locator in _chat_button_candidates(page):
+async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
+    debug: dict[str, Any] = {
+        "chat_button_candidates": {},
+        "clicked_candidate": None,
+        "clicked_candidate_debug": None,
+    }
+
+    for name, locator in _chat_button_candidates(page):
+        debug["chat_button_candidates"][name] = await collect_element_debug(page, locator, name)
+
+    for name, locator in _chat_button_candidates(page):
         try:
             if await locator.count() == 0:
                 continue
@@ -215,62 +309,50 @@ async def click_chat_button(page) -> bool:
         except Exception:
             continue
 
+        debug["clicked_candidate"] = name
+        debug["clicked_candidate_debug"] = await collect_element_debug(page, locator, f"clicked::{name}")
+
         try:
             await locator.scroll_into_view_if_needed()
             await page.wait_for_timeout(300)
         except Exception:
             pass
 
-        try:
-            box = await locator.bounding_box()
-            if box:
-                x = box["x"] + box["width"] / 2
-                y = box["y"] + box["height"] / 2
-                await page.mouse.move(x, y)
-                await page.wait_for_timeout(150)
-                await page.mouse.click(x, y)
-                await page.wait_for_timeout(900)
+        for click_mode in ("mouse", "normal", "force"):
+            try:
+                if click_mode == "mouse":
+                    box = await locator.bounding_box()
+                    if not box:
+                        raise RuntimeError("bounding_box is empty")
+                    x = box["x"] + box["width"] / 2
+                    y = box["y"] + box["height"] / 2
+                    await page.mouse.move(x, y)
+                    await page.wait_for_timeout(150)
+                    await page.mouse.click(x, y)
+                elif click_mode == "normal":
+                    await locator.click(timeout=5000)
+                else:
+                    await locator.click(force=True, timeout=5000)
+
+                await page.wait_for_timeout(1200)
 
                 if await has_chat_root(page):
-                    return True
+                    debug["click_mode"] = click_mode
+                    return True, debug
 
                 input_locator = await find_message_input(page)
                 if input_locator is not None:
-                    return True
-        except Exception:
-            pass
+                    debug["click_mode"] = click_mode
+                    return True, debug
 
-        try:
-            await locator.click(timeout=5000)
-            await page.wait_for_timeout(900)
+                if "chat=1" in (page.url or ""):
+                    debug["click_mode"] = click_mode
+                    return True, debug
 
-            if await has_chat_root(page):
-                return True
+            except Exception as exc:
+                debug[f"{name}_{click_mode}_error"] = str(exc)
 
-            input_locator = await find_message_input(page)
-            if input_locator is not None:
-                return True
-
-            return True
-        except Exception:
-            pass
-
-        try:
-            await locator.click(force=True, timeout=5000)
-            await page.wait_for_timeout(900)
-
-            if await has_chat_root(page):
-                return True
-
-            input_locator = await find_message_input(page)
-            if input_locator is not None:
-                return True
-
-            return True
-        except Exception:
-            continue
-
-    return False
+    return False, debug
 
 
 async def wait_for_chat_mount(page) -> None:
@@ -294,6 +376,9 @@ async def wait_for_chat_mount(page) -> None:
                 return
         except Exception:
             pass
+
+        if "chat=1" in (page.url or ""):
+            await page.wait_for_timeout(1200)
 
         await page.wait_for_timeout(1000)
 
