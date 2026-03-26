@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from olx.account_runtime import close_idle_account_runtimes
 from db import (
     get_active_users,
     get_proxy_by_id,
@@ -9,7 +9,7 @@ from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
 
 DIALOGS_POLL_INTERVAL_SECONDS = 180
-
+RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
 
 async def run_dialogs_polling_for_user(
     *,
@@ -76,3 +76,22 @@ def start_dialogs_jobs(application) -> None:
 
 async def _dialogs_poll_job_callback(context) -> None:
     await run_dialogs_polling_iteration(context.application)
+
+    def start_dialogs_jobs(application) -> None:
+        application.job_queue.run_repeating(
+            _dialogs_poll_job_callback,
+            interval=DIALOGS_POLL_INTERVAL_SECONDS,
+            first=30,
+            name="dialogs_poll_job",
+        )
+        application.job_queue.run_repeating(
+            _runtime_cleanup_job_callback,
+            interval=RUNTIME_CLEANUP_INTERVAL_SECONDS,
+            first=60,
+            name="account_runtime_cleanup_job",
+        )
+
+    async def _runtime_cleanup_job_callback(context) -> None:
+        closed = await close_idle_account_runtimes()
+        if closed:
+            print(f"[account_runtime] closed idle runtimes: {closed}")

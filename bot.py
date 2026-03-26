@@ -1,6 +1,5 @@
 import logging
 import os
-from olx.dialogs_jobs import start_dialogs_jobs
 
 from dotenv import load_dotenv
 from telegram import BotCommand, MenuButtonCommands
@@ -12,6 +11,7 @@ from telegram.ext import (
     filters,
 )
 
+from olx.dialogs_jobs import start_dialogs_jobs
 from telegram_ui.handlers import (
     start_handler,
     menu_handler,
@@ -23,8 +23,8 @@ from telegram_ui.handlers import (
 )
 
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-start_dialogs_jobs(application)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -34,6 +34,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([
@@ -59,6 +60,8 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
+
+    start_dialogs_jobs(app)
 
     print("Bot is running...")
     app.run_polling(drop_pending_updates=True)

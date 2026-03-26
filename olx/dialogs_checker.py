@@ -1,389 +1,263 @@
 from __future__ import annotations
 
-import hashlib
-import re
 from typing import Any
 
-from playwright.async_api import Locator, Page
-
-DIALOG_ITEM_SELECTORS = [
-    '[data-testid="chat-list-item"]',
-    '[data-testid="conversation-item"]',
-    '[data-testid*="conversation-item"]',
-    '[data-testid*="chat-list-item"]',
-    '[data-cy="conversation-row"]',
-    '[data-cy="chat-row"]',
-    'main a[href*="/myaccount/answers/"]',
-]
-
-SELLER_NAME_SELECTORS = [
-    '[data-testid="conversation-user-name"]',
-    '[data-testid="chat-user-name"]',
-    '[data-testid*="seller-name"]',
-    '[data-testid*="user-name"]',
-    'h4',
-    'h3',
-    'strong',
-]
-
-AD_TITLE_SELECTORS = [
-    '[data-testid="conversation-ad-title"]',
-    '[data-testid="chat-ad-title"]',
-    '[data-testid*="ad-title"]',
-    '[data-testid*="listing-title"]',
-    '[data-cy="ad-title"]',
-    'p',
-    'span',
-]
-
-LAST_MESSAGE_SELECTORS = [
-    '[data-testid="conversation-last-message"]',
-    '[data-testid="chat-last-message"]',
-    '[data-testid*="last-message"]',
-    '[data-testid*="message-preview"]',
-    '[data-cy="last-message"]',
-    'p',
-    'span',
-]
-
-TIME_HINT_SELECTORS = [
-    'time',
-    '[data-testid="conversation-time"]',
-    '[data-testid="chat-time"]',
-    '[data-testid*="timestamp"]',
-    '[data-testid*="time"]',
-]
-
-UNREAD_SELECTORS = [
-    '[data-testid="unread-badge"]',
-    '[data-testid*="unread"]',
-    '[data-cy="unread-badge"]',
-    '[aria-label*="unread" i]',
-    '[aria-label*="não lida" i]',
-]
-
-
-def _normalize_space(value: str | None) -> str:
-    if not value:
-        return ""
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def _extract_ad_external_id(value: str | None) -> str | None:
-    if not value:
-        return None
-    match = re.search(r"\bID[A-Za-z0-9]+\b", value)
-    return match.group(0) if match else None
-
-
-def _make_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-async def collect_dialog_rows(page: Page) -> list[Locator]:
-    best_selector = None
-    best_count = 0
-
-    for selector in DIALOG_ITEM_SELECTORS:
-        try:
-            locator = page.locator(selector)
-            count = await locator.count()
-            if count > best_count:
-                best_count = count
-                best_selector = selector
-        except Exception:
-            continue
-
-    if not best_selector or best_count == 0:
-        return []
-
-    locator = page.locator(best_selector)
-    return [locator.nth(i) for i in range(best_count)]
-
-
-async def parse_dialog_row(locator: Locator) -> dict[str, Any]:
-    seller_name = await extract_dialog_seller_name(locator)
-    ad_title = await extract_dialog_ad_title(locator)
-    last_message_text = await extract_dialog_last_message(locator)
-    conversation_url = await extract_dialog_href(locator)
-    updated_hint = await extract_dialog_updated_hint(locator)
-    is_unread = await extract_dialog_unread_flag(locator)
-    raw_preview = await _safe_inner_text(locator)
-
-    ad_external_id = (
-        _extract_ad_external_id(ad_title)
-        or _extract_ad_external_id(last_message_text)
-        or _extract_ad_external_id(conversation_url)
-        or _extract_ad_external_id(raw_preview)
-    )
-
-    ad_url = await extract_dialog_ad_url(locator, raw_preview)
-
-    conversation_key = build_dialog_fingerprint(
-        conversation_url=conversation_url,
-        seller_name=seller_name,
-        ad_title=ad_title,
-        ad_external_id=ad_external_id,
-    )
-
-    last_message_direction_guess = guess_message_direction(
-        last_message_text=last_message_text,
-        raw_preview=raw_preview,
-        seller_name=seller_name,
-    )
-
-    return {
-        "conversation_key": conversation_key,
-        "conversation_url": conversation_url,
-        "seller_name": seller_name,
-        "ad_title": ad_title,
-        "ad_url": ad_url,
-        "ad_external_id": ad_external_id,
-        "last_message_text": last_message_text,
-        "last_message_direction_guess": last_message_direction_guess,
-        "is_unread": is_unread,
-        "updated_hint": updated_hint,
-        "raw_preview": raw_preview,
-    }
-
-
-async def parse_dialogs_page(page: Page) -> list[dict[str, Any]]:
-    rows = await collect_dialog_rows(page)
-    parsed: list[dict[str, Any]] = []
-
-    for row in rows:
-        try:
-            item = await parse_dialog_row(row)
-            if item["conversation_key"]:
-                parsed.append(item)
-        except Exception:
-            continue
-
-    return parsed
-
-
-def build_dialog_fingerprint(
-    *,
-    conversation_url: str | None,
-    seller_name: str | None,
-    ad_title: str | None,
-    ad_external_id: str | None,
-) -> str:
-    stable = "|".join(
-        [
-            _normalize_space(conversation_url),
-            _normalize_space(seller_name).lower(),
-            _normalize_space(ad_title).lower(),
-            _normalize_space(ad_external_id),
-        ]
-    )
-    return _make_sha256(stable)
-
-
-def build_incoming_message_key(
-    *,
-    conversation_key: str,
-    seller_name: str | None,
-    last_message_text: str | None,
-    updated_hint: str | None,
-) -> str:
-    stable = "|".join(
-        [
-            _normalize_space(conversation_key),
-            _normalize_space(seller_name).lower(),
-            _normalize_space(last_message_text),
-            _normalize_space(updated_hint),
-        ]
-    )
-    return _make_sha256(stable)
-
-
-def guess_message_direction(
-    *,
-    last_message_text: str | None,
-    raw_preview: str | None,
-    seller_name: str | None,
-) -> str:
-    text = _normalize_space(last_message_text).lower()
-    preview = _normalize_space(raw_preview).lower()
-    seller = _normalize_space(seller_name).lower()
-
-    if not text and not preview:
-        return "unknown"
-
-    if seller and seller in text:
-        return "incoming"
-
-    if text.startswith("você:") or text.startswith("tu:"):
-        return "outgoing"
-
-    if "you:" in text:
-        return "outgoing"
-
-    if "respondeu" in preview or "enviou uma mensagem" in preview:
-        return "incoming"
-
-    return "unknown"
-
-
-async def extract_dialog_href(locator: Locator) -> str | None:
-    candidates = [
-        locator,
-        locator.locator('a[href*="/myaccount/answers/"]').first,
-        locator.locator("a").first,
-    ]
-
-    for candidate in candidates:
-        try:
-            href = await candidate.get_attribute("href")
-            href = _normalize_space(href)
-            if href:
-                return href
-        except Exception:
-            continue
-
-    return None
-
-
-async def extract_dialog_ad_url(locator: Locator, raw_preview: str | None = None) -> str | None:
-    try:
-        links = locator.locator('a[href*="/d/anuncio/"]')
-        count = await links.count()
-        for i in range(count):
-            href = _normalize_space(await links.nth(i).get_attribute("href"))
-            if href:
-                return href
-    except Exception:
-        pass
-
-    match = re.search(r'https?://[^\s"]+/d/anuncio/[^\s"]+', raw_preview or "")
-    if match:
-        return match.group(0)
-
-    return None
-
-
-async def extract_dialog_seller_name(locator: Locator) -> str | None:
-    for selector in SELLER_NAME_SELECTORS:
-        try:
-            candidate = locator.locator(selector).first
-            if await candidate.count() == 0:
-                continue
-            text = _normalize_space(await candidate.inner_text())
-            if text and len(text) <= 120:
-                return text
-        except Exception:
-            continue
-    return None
-
-
-async def extract_dialog_ad_title(locator: Locator) -> str | None:
-    texts_seen: list[str] = []
-
-    for selector in AD_TITLE_SELECTORS:
-        try:
-            candidates = locator.locator(selector)
-            count = await candidates.count()
-            for i in range(min(count, 5)):
-                text = _normalize_space(await candidates.nth(i).inner_text())
-                if not text or text in texts_seen:
-                    continue
-                texts_seen.append(text)
-
-                if len(text) < 3:
-                    continue
-
-                if _extract_ad_external_id(text):
-                    return text
-
-                if len(text) <= 220 and not _looks_like_time_hint(text):
-                    return text
-        except Exception:
-            continue
-
-    return None
-
-
-async def extract_dialog_last_message(locator: Locator) -> str | None:
-    for selector in LAST_MESSAGE_SELECTORS:
-        try:
-            candidates = locator.locator(selector)
-            count = await candidates.count()
-            for i in range(min(count, 6)):
-                text = _normalize_space(await candidates.nth(i).inner_text())
-                if not text:
-                    continue
-                if _looks_like_time_hint(text):
-                    continue
-                if len(text) <= 500:
-                    return text
-        except Exception:
-            continue
-
-    return None
-
-
-async def extract_dialog_updated_hint(locator: Locator) -> str | None:
-    for selector in TIME_HINT_SELECTORS:
-        try:
-            candidate = locator.locator(selector).first
-            if await candidate.count() == 0:
-                continue
-            text = _normalize_space(await candidate.inner_text())
-            if text:
-                return text
-        except Exception:
-            continue
-    return None
-
-
-async def extract_dialog_unread_flag(locator: Locator) -> bool:
-    for selector in UNREAD_SELECTORS:
-        try:
-            candidate = locator.locator(selector).first
-            if await candidate.count() == 0:
-                continue
-            if await candidate.is_visible():
-                return True
-        except Exception:
-            continue
-
-    try:
-        class_name = await locator.get_attribute("class")
-        if class_name and "unread" in class_name.lower():
-            return True
-    except Exception:
-        pass
-
-    try:
-        aria_label = await locator.get_attribute("aria-label")
-        if aria_label:
-            label = aria_label.lower()
-            if "unread" in label or "não lida" in label:
-                return True
-    except Exception:
-        pass
-
-    return False
-
-
-def _looks_like_time_hint(value: str) -> bool:
-    text = _normalize_space(value).lower()
-    if not text:
+from db import (
+    create_conversation_message,
+    create_or_update_conversation,
+    get_conversation_by_key,
+)
+from olx.account_runtime import close_runtime_page, open_account_runtime_page
+from olx.dialogs_page import open_dialogs_page
+from olx.dialogs_parser import (
+    build_incoming_message_key,
+    parse_dialogs_page,
+)
+from olx.message_sender_page import has_login_hint, is_cloudfront_block_page
+
+
+def _normalize_text(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _is_incoming_candidate(item: dict[str, Any]) -> bool:
+    if not _normalize_text(item.get("last_message_text")):
         return False
 
-    patterns = [
-        r"^\d{1,2}:\d{2}$",
-        r"^\d{1,2}/\d{1,2}$",
-        r"^\d{1,2}-\d{1,2}$",
-        r"^(hoje|ontem|today|yesterday)$",
-        r"^\d+\s*(min|mins|minutos|h|horas|d|dias)$",
-    ]
-    return any(re.match(pattern, text) for pattern in patterns)
+    direction_guess = item.get("last_message_direction_guess") or "unknown"
+    is_unread = bool(item.get("is_unread"))
+
+    if direction_guess == "incoming":
+        return True
+
+    if direction_guess == "outgoing":
+        return False
+
+    return is_unread
 
 
-async def _safe_inner_text(locator: Locator) -> str | None:
+async def check_account_dialogs(
+    *,
+    user_id: int,
+    account_id: int,
+    cookies_json: str,
+    proxy_text: str,
+    headless: bool = True,
+    olx_profile_name: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ok": False,
+        "status": "unknown",
+        "user_id": user_id,
+        "account_id": account_id,
+        "browser_engine": "gologin",
+        "gologin_profile_id": None,
+        "gologin_profile_name": None,
+        "debugger_address": None,
+        "final_url": None,
+        "page_title": None,
+        "cloudfront_blocked": False,
+        "login_hint_found": False,
+        "handled_soft_error_page": False,
+        "dialog_rows_found": 0,
+        "parsed_dialogs_count": 0,
+        "new_incoming_count": 0,
+        "conversations_upserted": 0,
+        "new_incoming_events": [],
+        "parsed_dialogs": [],
+        "error": None,
+    }
+
+    page = None
+    runtime_entry = None
+
     try:
-        return _normalize_space(await locator.inner_text())
-    except Exception:
-        return None
+        page, runtime_entry = await open_account_runtime_page(
+            user_id=user_id,
+            account_id=account_id,
+            cookies_json=cookies_json,
+            proxy_text=proxy_text,
+            url=None,
+            headless=headless,
+            olx_profile_name=olx_profile_name,
+            timeout=90000,
+            wait_after_ms=0,
+            busy_reason="dialogs_check",
+        )
+
+        result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
+        result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
+        result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
+        result["debugger_address"] = runtime_entry.runtime.get("debugger_address")
+
+        try:
+            await page.set_viewport_size({"width": 1440, "height": 1100})
+            await page.wait_for_timeout(600)
+        except Exception:
+            pass
+
+        page_info = await open_dialogs_page(
+            page,
+            timeout=90000,
+            wait_after_ms=4000,
+        )
+        result.update(page_info)
+        result["final_url"] = page.url
+
+        if await is_cloudfront_block_page(page):
+            result["status"] = "cloudfront_blocked"
+            result["cloudfront_blocked"] = True
+            result["error"] = "OLX/CloudFront вернул block page при открытии диалогов"
+            return result
+
+        if await has_login_hint(page):
+            result["status"] = "not_logged_in"
+            result["login_hint_found"] = True
+            result["error"] = "OLX показывает логин вместо списка диалогов"
+            return result
+
+        parsed_dialogs = await parse_dialogs_page(page)
+        result["parsed_dialogs_count"] = len(parsed_dialogs)
+        result["parsed_dialogs"] = parsed_dialogs
+
+        conversations_upserted = 0
+        new_incoming_events: list[dict[str, Any]] = []
+
+        for item in parsed_dialogs:
+            conversation_key = item["conversation_key"]
+
+            existing_conversation = get_conversation_by_key(
+                user_id=user_id,
+                account_id=account_id,
+                conversation_key=conversation_key,
+            )
+
+            incoming_message_key = None
+            if _is_incoming_candidate(item):
+                incoming_message_key = build_incoming_message_key(
+                    conversation_key=conversation_key,
+                    seller_name=item.get("seller_name"),
+                    last_message_text=item.get("last_message_text"),
+                    updated_hint=item.get("updated_hint"),
+                )
+
+            conversation_id = create_or_update_conversation(
+                user_id=user_id,
+                account_id=account_id,
+                conversation_key=conversation_key,
+                conversation_url=item.get("conversation_url"),
+                seller_name=item.get("seller_name"),
+                ad_title=item.get("ad_title"),
+                ad_url=item.get("ad_url"),
+                ad_external_id=item.get("ad_external_id"),
+                last_message_preview=item.get("last_message_text"),
+                last_message_at_hint=item.get("updated_hint"),
+                is_unread=bool(item.get("is_unread")),
+                last_incoming_message_key=incoming_message_key,
+                status="active",
+            )
+            conversations_upserted += 1
+
+            if not incoming_message_key:
+                continue
+
+            message_id = create_conversation_message(
+                conversation_id=conversation_id,
+                account_id=account_id,
+                external_message_key=incoming_message_key,
+                direction="incoming",
+                sender_name=item.get("seller_name"),
+                text=item.get("last_message_text") or "",
+                is_unread=bool(item.get("is_unread")),
+                sent_at_hint=item.get("updated_hint"),
+                status="new_incoming",
+            )
+
+            if message_id is None:
+                continue
+
+            new_incoming_events.append(
+                {
+                    "conversation_id": conversation_id,
+                    "conversation_key": conversation_key,
+                    "message_id": message_id,
+                    "account_id": account_id,
+                    "seller_name": item.get("seller_name"),
+                    "ad_title": item.get("ad_title"),
+                    "ad_url": item.get("ad_url"),
+                    "ad_external_id": item.get("ad_external_id"),
+                    "conversation_url": item.get("conversation_url"),
+                    "text": item.get("last_message_text"),
+                    "is_unread": bool(item.get("is_unread")),
+                    "updated_hint": item.get("updated_hint"),
+                    "is_new_conversation": existing_conversation is None,
+                }
+            )
+
+        result["conversations_upserted"] = conversations_upserted
+        result["new_incoming_events"] = new_incoming_events
+        result["new_incoming_count"] = len(new_incoming_events)
+        result["ok"] = True
+        result["status"] = "ok"
+        return result
+
+    except Exception as exc:
+        result["status"] = "failed"
+        result["error"] = str(exc)
+        return result
+
+    finally:
+        if runtime_entry is not None:
+            await close_runtime_page(runtime_entry, page)
+
+
+async def check_user_dialogs(
+    *,
+    user_id: int,
+    accounts: list[dict],
+    proxies_by_id: dict[int, dict],
+    headless: bool = True,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "ok": True,
+        "status": "ok",
+        "user_id": user_id,
+        "accounts_checked": 0,
+        "accounts_skipped": 0,
+        "total_new_incoming_count": 0,
+        "account_results": [],
+        "new_incoming_events": [],
+    }
+
+    for account in accounts:
+        cookies_json = account.get("cookies_json")
+        proxy_id = account.get("proxy_id")
+        proxy = proxies_by_id.get(proxy_id) if proxy_id else None
+        proxy_text = proxy.get("proxy_text") if proxy else None
+
+        if not cookies_json or not proxy_text:
+            summary["accounts_skipped"] += 1
+            summary["account_results"].append(
+                {
+                    "ok": False,
+                    "status": "skipped_missing_credentials",
+                    "account_id": account["id"],
+                }
+            )
+            continue
+
+        account_result = await check_account_dialogs(
+            user_id=user_id,
+            account_id=account["id"],
+            cookies_json=cookies_json,
+            proxy_text=proxy_text,
+            headless=headless,
+            olx_profile_name=account.get("olx_profile_name"),
+        )
+
+        summary["accounts_checked"] += 1
+        summary["account_results"].append(account_result)
+        summary["total_new_incoming_count"] += account_result.get("new_incoming_count", 0)
+        summary["new_incoming_events"].extend(account_result.get("new_incoming_events", []))
+
+    return summary
