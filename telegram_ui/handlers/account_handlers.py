@@ -3,7 +3,7 @@ import json
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-
+from olx.account_runtime import close_account_runtime, mark_account_runtime_deleted
 from db import (
     create_account,
     delete_account,
@@ -594,28 +594,28 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
-        cleanup_note = ""
-        try:
-            cleanup_result = delete_account_gologin_profile(
-                user_id=user_id,
-                account_id=account_id,
-            )
-            if cleanup_result.get("deleted"):
-                cleanup_note = "\nGoLogin profile тоже удалён."
-        except Exception as exc:
-            cleanup_note = f"\nПрофиль GoLogin удалить не удалось: {exc}"
+        cleanup_note = await _delete_account_and_profile(
+            user_id=user_id,
+            account_id=account_id,
+        )
 
-        delete_account(user_id, account_id)
         accounts = get_user_accounts(user_id)
 
         if accounts:
-            text = "✅ Аккаунт удалён." + cleanup_note + "\n\nОставшиеся аккаунты:\n\n"
+            text = "✅ Аккаунт удалён.\n"
+            if cleanup_note:
+                text += f"\n{cleanup_note}\n"
+            text += "\nОставшиеся аккаунты:\n\n"
+
             for index, item in enumerate(accounts, start=1):
                 profile_name = account_display_name(item, fallback_index=index)
                 status = humanize_account_status(item.get("status"))
                 text += f"{index}. {profile_name} [{status}]\n"
         else:
-            text = "✅ Аккаунт удалён." + cleanup_note + "\n\nСписок аккаунтов теперь пуст."
+            text = "✅ Аккаунт удалён."
+            if cleanup_note:
+                text += f"\n\n{cleanup_note}"
+            text += "\n\nСписок аккаунтов теперь пуст."
 
         await safe_edit_message_text(
             query,
@@ -730,3 +730,33 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
 
         context.user_data.clear()
         await update.message.reply_text("✅ Cookies обновлены." + sync_note)
+
+async def _delete_account_and_profile(*, user_id: int, account_id: int) -> str:
+    cleanup_lines: list[str] = []
+
+    try:
+        await mark_account_runtime_deleted(account_id)
+        cleanup_lines.append("Runtime помечен как удалённый.")
+    except Exception as exc:
+        cleanup_lines.append(f"Не удалось пометить runtime как удалённый: {exc}")
+
+    try:
+        await close_account_runtime(account_id, reason="account_deleted")
+        cleanup_lines.append("Активный runtime закрыт.")
+    except Exception as exc:
+        cleanup_lines.append(f"Не удалось закрыть runtime: {exc}")
+
+    try:
+        cleanup_result = delete_account_gologin_profile(
+            user_id=user_id,
+            account_id=account_id,
+        )
+        if cleanup_result.get("deleted"):
+            cleanup_lines.append("GoLogin profile тоже удалён.")
+        elif cleanup_result.get("reason") == "no_profile":
+            cleanup_lines.append("У аккаунта не было GoLogin profile.")
+    except Exception as exc:
+        cleanup_lines.append(f"Профиль GoLogin удалить не удалось: {exc}")
+
+    delete_account(user_id, account_id)
+    return "\n".join(cleanup_lines)

@@ -2,48 +2,55 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import BotCommand, MenuButtonCommands
+from telegram import BotCommand, MenuButtonCommands, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
 
 from olx.dialogs_jobs import start_dialogs_jobs
 from telegram_ui.handlers import (
-    start_handler,
-    menu_handler,
-    text_handler,
     button_handler,
-    pending_handler,
-    last_handler,
     document_handler,
+    last_handler,
+    menu_handler,
+    pending_handler,
+    start_handler,
+    text_handler,
 )
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.WARNING,
+    level=logging.INFO,
 )
-
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"[telegram_error] {context.error}")
+
+
 async def post_init(application: Application):
-    await application.bot.set_my_commands([
-        BotCommand("menu", "Открыть главное меню"),
-        BotCommand("start", "Запустить бота"),
-        BotCommand("account", "Аккаунт"),
-        BotCommand("templates", "Шаблоны"),
-        BotCommand("settings", "Настройка софта"),
-    ])
+    await application.bot.set_my_commands(
+        [
+            BotCommand("menu", "Открыть главное меню"),
+            BotCommand("start", "Запустить бота"),
+            BotCommand("account", "Аккаунт"),
+            BotCommand("templates", "Шаблоны"),
+            BotCommand("settings", "Настройка софта"),
+        ]
+    )
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
@@ -52,6 +59,8 @@ def main():
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    app.add_error_handler(error_handler)
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("menu", menu_handler))

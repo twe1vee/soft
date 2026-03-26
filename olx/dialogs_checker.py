@@ -5,6 +5,7 @@ from typing import Any
 from db import (
     create_conversation_message,
     create_or_update_conversation,
+    get_account_by_id,
     get_conversation_by_key,
 )
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
@@ -14,6 +15,7 @@ from olx.dialogs_parser import (
     parse_dialogs_page,
 )
 from olx.message_sender_page import has_login_hint, is_cloudfront_block_page
+from olx.profile_manager_gologin import AccountRuntimeBlockedError
 
 
 def _normalize_text(value: str | None) -> str:
@@ -68,6 +70,12 @@ async def check_account_dialogs(
         "error": None,
     }
 
+    fresh_account = get_account_by_id(user_id, account_id)
+    if not fresh_account:
+        result["status"] = "skipped_deleted_account"
+        result["error"] = f"account_id={account_id} already deleted"
+        return result
+
     page = None
     runtime_entry = None
 
@@ -84,7 +92,12 @@ async def check_account_dialogs(
             wait_after_ms=0,
             busy_reason="dialogs_check",
         )
+    except AccountRuntimeBlockedError as exc:
+        result["status"] = "skipped_runtime_blocked"
+        result["error"] = str(exc)
+        return result
 
+    try:
         result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
         result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
         result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
@@ -172,7 +185,6 @@ async def check_account_dialogs(
                 sent_at_hint=item.get("updated_hint"),
                 status="new_incoming",
             )
-
             if message_id is None:
                 continue
 
@@ -205,7 +217,6 @@ async def check_account_dialogs(
         result["status"] = "failed"
         result["error"] = str(exc)
         return result
-
     finally:
         if runtime_entry is not None:
             await close_runtime_page(runtime_entry, page)
@@ -230,8 +241,21 @@ async def check_user_dialogs(
     }
 
     for account in accounts:
-        cookies_json = account.get("cookies_json")
-        proxy_id = account.get("proxy_id")
+        account_id = account["id"]
+        fresh_account = get_account_by_id(user_id, account_id)
+        if not fresh_account:
+            summary["accounts_skipped"] += 1
+            summary["account_results"].append(
+                {
+                    "ok": False,
+                    "status": "skipped_deleted_account",
+                    "account_id": account_id,
+                }
+            )
+            continue
+
+        cookies_json = fresh_account.get("cookies_json")
+        proxy_id = fresh_account.get("proxy_id")
         proxy = proxies_by_id.get(proxy_id) if proxy_id else None
         proxy_text = proxy.get("proxy_text") if proxy else None
 
@@ -241,20 +265,19 @@ async def check_user_dialogs(
                 {
                     "ok": False,
                     "status": "skipped_missing_credentials",
-                    "account_id": account["id"],
+                    "account_id": account_id,
                 }
             )
             continue
 
         account_result = await check_account_dialogs(
             user_id=user_id,
-            account_id=account["id"],
+            account_id=account_id,
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             headless=headless,
-            olx_profile_name=account.get("olx_profile_name"),
+            olx_profile_name=fresh_account.get("olx_profile_name"),
         )
-
         summary["accounts_checked"] += 1
         summary["account_results"].append(account_result)
         summary["total_new_incoming_count"] += account_result.get("new_incoming_count", 0)

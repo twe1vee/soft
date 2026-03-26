@@ -6,7 +6,9 @@ from typing import AsyncIterator
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
+from db import clear_account_gologin_profile
 from olx.profile_manager_gologin import (
+    AccountRuntimeBlockedError,
     build_gologin_client,
     ensure_gologin_profile,
 )
@@ -23,16 +25,25 @@ def _to_cdp_endpoint(debugger_address: str) -> str:
     return f"http://{raw}"
 
 
-@asynccontextmanager
-async def open_gologin_browser_context(
+def _is_profile_not_found_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "profile deleted or not found" in text
+        or "profile not found" in text
+        or "not found" in text
+        or "404" in text
+    )
+
+
+async def _prepare_runtime(
+    *,
     cookies_json: str,
     proxy_text: str,
-    *,
-    headless: bool = True,
-    user_id: int | None = None,
-    account_id: int | None = None,
-    olx_profile_name: str | None = None,
-) -> AsyncIterator[tuple[Browser, BrowserContext, dict]]:
+    headless: bool,
+    user_id: int | None,
+    account_id: int | None,
+    olx_profile_name: str | None,
+) -> tuple[dict, object]:
     runtime = await asyncio.to_thread(
         ensure_gologin_profile,
         cookies_json=cookies_json,
@@ -43,10 +54,30 @@ async def open_gologin_browser_context(
     )
 
     profile_id = runtime["gologin_profile_id"]
-
     gl = build_gologin_client(
         profile_id=profile_id,
         headless=headless,
+    )
+    return runtime, gl
+
+
+@asynccontextmanager
+async def open_gologin_browser_context(
+    cookies_json: str,
+    proxy_text: str,
+    *,
+    headless: bool = True,
+    user_id: int | None = None,
+    account_id: int | None = None,
+    olx_profile_name: str | None = None,
+) -> AsyncIterator[tuple[Browser, BrowserContext, dict]]:
+    runtime, gl = await _prepare_runtime(
+        cookies_json=cookies_json,
+        proxy_text=proxy_text,
+        headless=headless,
+        user_id=user_id,
+        account_id=account_id,
+        olx_profile_name=olx_profile_name,
     )
 
     playwright = None
@@ -56,7 +87,33 @@ async def open_gologin_browser_context(
     debugger_address: str | None = None
 
     try:
-        debugger_address = await asyncio.to_thread(gl.start)
+        try:
+            debugger_address = await asyncio.to_thread(gl.start)
+        except Exception as exc:
+            if not _is_profile_not_found_error(exc):
+                raise
+
+            if user_id is None or account_id is None:
+                raise
+
+            print(
+                f"[gologin] stale profile on start for account_id={account_id}, "
+                f"clearing profile id and recreating"
+            )
+
+            await asyncio.to_thread(clear_account_gologin_profile, user_id, account_id)
+
+            runtime, gl = await _prepare_runtime(
+                cookies_json=cookies_json,
+                proxy_text=proxy_text,
+                headless=headless,
+                user_id=user_id,
+                account_id=account_id,
+                olx_profile_name=olx_profile_name,
+            )
+
+            debugger_address = await asyncio.to_thread(gl.start)
+
         runtime["debugger_address"] = debugger_address
 
         playwright = await async_playwright().start()

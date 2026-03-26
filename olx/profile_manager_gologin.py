@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from gologin import GoLogin
@@ -16,6 +16,10 @@ from db.accounts import (
 from olx.cookies import normalize_cookies
 
 GOLOGIN_API_BASE = "https://api.gologin.com"
+
+
+class AccountRuntimeBlockedError(RuntimeError):
+    pass
 
 
 def get_gologin_token() -> str:
@@ -39,17 +43,18 @@ def build_gologin_client(
 ) -> GoLogin:
     token = get_gologin_token()
     extra_params: list[str] = []
-
     if headless:
         extra_params.append("--headless=new")
 
-    return GoLogin({
-        "token": token,
-        "profile_id": profile_id,
-        "extra_params": extra_params,
-        "uploadCookiesToServer": True,
-        "writeCookesFromServer": True,
-    })
+    return GoLogin(
+        {
+            "token": token,
+            "profile_id": profile_id,
+            "extra_params": extra_params,
+            "uploadCookiesToServer": True,
+            "writeCookesFromServer": True,
+        }
+    )
 
 
 def _normalize_same_site_for_gologin(value: str | None) -> str | None:
@@ -120,10 +125,8 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
     if "://" in raw:
         parsed = urlparse(raw)
         mode = (parsed.scheme or _default_proxy_mode()).lower()
-
         if mode == "https":
             mode = "http"
-
         if mode not in {"http", "socks4", "socks5"}:
             raise ValueError(f"Неподдерживаемый тип прокси для GoLogin: {mode}")
 
@@ -147,7 +150,6 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
         return payload
 
     parts = raw.split(":")
-
     if len(parts) == 2:
         host, port = parts
         return {
@@ -161,7 +163,6 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
         port = int(parts[1].strip())
         username = parts[2].strip()
         password = ":".join(parts[3:]).strip()
-
         return {
             "mode": _default_proxy_mode(),
             "host": host,
@@ -185,29 +186,27 @@ def _build_profile_name(
 ) -> str:
     if (olx_profile_name or "").strip():
         return olx_profile_name.strip()
-
     if account_id is not None:
         return f"OLX Account {account_id}"
-
     if user_id is not None:
         return f"OLX User {user_id}"
-
     return "OLX Runtime Profile"
 
 
 def create_profile(profile_name: str) -> str:
     gl = build_gologin_client(profile_id=None, headless=True)
-    created = gl.createProfileRandomFingerprint({
-        "os": "win",
-        "name": profile_name,
-    })
+    created = gl.createProfileRandomFingerprint(
+        {
+            "os": "win",
+            "name": profile_name,
+        }
+    )
 
     profile_id = (
         created.get("id")
         or created.get("profile_id")
         or created.get("_id")
     )
-
     if not profile_id:
         raise RuntimeError(f"GoLogin не вернул profile_id: {created}")
 
@@ -316,12 +315,21 @@ def create_temporary_proxy_profile(
 ) -> dict[str, Any]:
     profile_id = create_profile(profile_name)
     proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
-
     return {
         "gologin_profile_id": profile_id,
         "gologin_profile_name": profile_name,
         "proxy_payload": proxy_payload,
     }
+
+
+def _is_profile_not_found_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "profile deleted or not found" in text
+        or "profile not found" in text
+        or "not found" in text
+        or "404" in text
+    )
 
 
 def ensure_gologin_profile(
@@ -338,12 +346,16 @@ def ensure_gologin_profile(
 
     if user_id is not None and account_id is not None:
         account = get_account_by_id(user_id, account_id)
-        if account:
-            existing_profile_id = account.get("gologin_profile_id")
-            existing_profile_name = (
-                account.get("gologin_profile_name")
-                or account.get("olx_profile_name")
+        if not account:
+            raise AccountRuntimeBlockedError(
+                f"account_id={account_id} not found; runtime/profile creation blocked"
             )
+
+        existing_profile_id = account.get("gologin_profile_id")
+        existing_profile_name = (
+            account.get("gologin_profile_name")
+            or account.get("olx_profile_name")
+        )
 
     final_profile_name = _build_profile_name(
         user_id=user_id,
@@ -354,22 +366,85 @@ def ensure_gologin_profile(
     profile_id = existing_profile_id
     profile_name = final_profile_name
 
-    if not profile_id:
-        profile_id = create_profile(profile_name)
+    if profile_id:
+        try:
+            proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
+            cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
+        except Exception as exc:
+            if not _is_profile_not_found_error(exc):
+                raise
+
+            if user_id is not None and account_id is not None:
+                fresh_account = get_account_by_id(user_id, account_id)
+                if not fresh_account:
+                    raise AccountRuntimeBlockedError(
+                        f"account_id={account_id} deleted; stale profile recovery blocked"
+                    )
+                clear_account_gologin_profile(user_id, account_id)
+
+            profile_id = None
+        else:
+            if user_id is not None and account_id is not None:
+                fresh_account = get_account_by_id(user_id, account_id)
+                if not fresh_account:
+                    try:
+                        delete_gologin_profile(profile_id)
+                    except Exception:
+                        pass
+                    raise AccountRuntimeBlockedError(
+                        f"account_id={account_id} deleted after existing profile reuse; blocked"
+                    )
+
+                update_account_gologin_profile(
+                    user_id=user_id,
+                    account_id=account_id,
+                    gologin_profile_id=profile_id,
+                    gologin_profile_name=profile_name,
+                )
+                update_account_browser_engine(
+                    user_id=user_id,
+                    account_id=account_id,
+                    browser_engine="gologin",
+                )
+
+            return {
+                "browser_engine": "gologin",
+                "gologin_profile_id": profile_id,
+                "gologin_profile_name": profile_name,
+                "proxy_payload": proxy_payload,
+                "cookies_count": cookies_count,
+            }
+
+    if user_id is not None and account_id is not None:
+        fresh_account = get_account_by_id(user_id, account_id)
+        if not fresh_account:
+            raise AccountRuntimeBlockedError(
+                f"account_id={account_id} not found before new profile creation; blocked"
+            )
+
+    profile_id = create_profile(profile_name)
 
     try:
         proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
         cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
     except Exception:
-        if existing_profile_id:
-            # Если профиль был удалён руками в GoLogin или сломан, пересоздаём один раз
-            profile_id = create_profile(profile_name)
-            proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
-            cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
-        else:
-            raise
+        try:
+            delete_gologin_profile(profile_id)
+        except Exception:
+            pass
+        raise
 
     if user_id is not None and account_id is not None:
+        fresh_account = get_account_by_id(user_id, account_id)
+        if not fresh_account:
+            try:
+                delete_gologin_profile(profile_id)
+            except Exception:
+                pass
+            raise AccountRuntimeBlockedError(
+                f"account_id={account_id} deleted after new profile creation; blocked"
+            )
+
         update_account_gologin_profile(
             user_id=user_id,
             account_id=account_id,

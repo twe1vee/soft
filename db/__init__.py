@@ -1,10 +1,12 @@
 from .database import init_db, get_connection, DB_FILE
+
 from .users import (
     get_user_by_telegram_id,
     create_user,
     get_or_create_user,
     get_active_users,
 )
+
 from .ads import (
     ad_exists,
     ad_seen_globally,
@@ -16,20 +18,24 @@ from .ads import (
     get_ad_by_id,
     get_ad_by_ad_id,
 )
+
 from .pending_actions import (
     create_pending_action,
     update_pending_action_status,
     get_pending_actions,
     get_next_pending_action,
 )
+
 from .messages import (
     create_message,
 )
+
 from .templates import (
     ensure_default_template,
     get_active_template,
     update_active_template,
 )
+
 from .accounts import (
     create_account,
     get_account_by_id,
@@ -45,6 +51,7 @@ from .accounts import (
     update_account_browser_engine,
     clear_account_gologin_profile,
 )
+
 from .proxies import (
     create_proxy,
     create_proxies_bulk,
@@ -56,6 +63,7 @@ from .proxies import (
     mark_proxy_checked,
     delete_proxy,
 )
+
 from .conversations import (
     create_or_update_conversation,
     get_conversation_by_id,
@@ -64,6 +72,7 @@ from .conversations import (
     update_conversation_read_state,
     update_conversation_last_preview,
 )
+
 from .conversation_messages import (
     conversation_message_exists,
     create_conversation_message,
