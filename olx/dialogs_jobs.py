@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from olx.account_runtime import close_idle_account_runtimes
 from db import (
     get_active_users,
@@ -10,6 +11,7 @@ from olx.dialogs_notifier import send_incoming_dialog_notifications
 
 DIALOGS_POLL_INTERVAL_SECONDS = 180
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
+
 
 async def run_dialogs_polling_for_user(
     *,
@@ -65,6 +67,16 @@ async def run_dialogs_polling_iteration(application) -> None:
             print(f"[dialogs_jobs] user_id={user_id} polling failed: {exc}")
 
 
+async def _dialogs_poll_job_callback(context) -> None:
+    await run_dialogs_polling_iteration(context.application)
+
+
+async def _runtime_cleanup_job_callback(context) -> None:
+    closed = await close_idle_account_runtimes()
+    if closed:
+        print(f"[account_runtime] closed idle runtimes: {closed}")
+
+
 def start_dialogs_jobs(application) -> None:
     application.job_queue.run_repeating(
         _dialogs_poll_job_callback,
@@ -72,26 +84,9 @@ def start_dialogs_jobs(application) -> None:
         first=30,
         name="dialogs_poll_job",
     )
-
-
-async def _dialogs_poll_job_callback(context) -> None:
-    await run_dialogs_polling_iteration(context.application)
-
-    def start_dialogs_jobs(application) -> None:
-        application.job_queue.run_repeating(
-            _dialogs_poll_job_callback,
-            interval=DIALOGS_POLL_INTERVAL_SECONDS,
-            first=30,
-            name="dialogs_poll_job",
-        )
-        application.job_queue.run_repeating(
-            _runtime_cleanup_job_callback,
-            interval=RUNTIME_CLEANUP_INTERVAL_SECONDS,
-            first=60,
-            name="account_runtime_cleanup_job",
-        )
-
-    async def _runtime_cleanup_job_callback(context) -> None:
-        closed = await close_idle_account_runtimes()
-        if closed:
-            print(f"[account_runtime] closed idle runtimes: {closed}")
+    application.job_queue.run_repeating(
+        _runtime_cleanup_job_callback,
+        interval=RUNTIME_CLEANUP_INTERVAL_SECONDS,
+        first=60,
+        name="account_runtime_cleanup_job",
+    )
