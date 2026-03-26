@@ -7,11 +7,12 @@ from olx.browser_session import (
     open_olx_browser_context,
     open_olx_page,
 )
-
 from olx.message_sender_chat import (
     click_chat_button,
+    collect_chat_diagnostics,
     find_message_input,
     get_chat_button_debug,
+    has_blocking_chat_gate,
     has_chat_root,
     wait_for_chat_mount,
 )
@@ -51,6 +52,12 @@ async def send_message_to_ad(
     result["gologin_profile_name"] = None
     result["debugger_address"] = None
 
+    result["message_button_clicked"] = False
+    result["chat_button_still_visible_after_click"] = None
+    result["chat_button_text_after_click"] = None
+    result["input_found"] = False
+    result["send_button_found"] = False
+
     if not (ad_url or "").strip():
         result["status"] = "invalid_input"
         result["error"] = "Пустой ad_url"
@@ -83,7 +90,6 @@ async def send_message_to_ad(
             )
 
             result["final_url"] = page.url
-
             try:
                 result["page_title"] = await page.title()
             except Exception:
@@ -115,6 +121,8 @@ async def send_message_to_ad(
             await dismiss_cookie_banner_if_present(page)
             await page.wait_for_timeout(1500)
 
+            result.update(await collect_chat_diagnostics(page))
+
             input_locator = await find_message_input(page)
 
             if input_locator is None:
@@ -128,13 +136,14 @@ async def send_message_to_ad(
                 if clicked:
                     await wait_for_chat_mount(page)
 
-                result["debug_chat_root_found"] = await has_chat_root(page)
+                result.update(await collect_chat_diagnostics(page))
                 result["debug_login_hint_found"] = await has_login_hint(page)
+                result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
 
                 input_locator = await find_message_input(page)
 
                 if input_locator is None:
-                    if result["debug_login_hint_found"]:
+                    if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
                         result["status"] = "login_required_or_chat_blocked"
                         result["error"] = (
                             "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода"
@@ -148,14 +157,11 @@ async def send_message_to_ad(
 
                     result["status"] = "message_input_not_found"
                     result["error"] = "Не найдено поле ввода сообщения после клика по chat-button"
-                    await save_debug_artifacts(
-                        page,
-                        result,
-                        prefix="message_input_not_found",
-                    )
+                    await save_debug_artifacts(page, result, prefix="message_input_not_found")
                     return result
 
             result["input_found"] = True
+            result.update(await collect_chat_diagnostics(page))
 
             await fill_message_input(input_locator, message_text)
             await page.wait_for_timeout(1000)
@@ -184,6 +190,7 @@ async def send_message_to_ad(
                 result["submit_button_text_after_click"] = None
 
             if not send_clicked:
+                result.update(await collect_chat_diagnostics(page))
                 result["status"] = "send_button_not_found"
                 result["error"] = "Не найдена кнопка отправки сообщения"
                 await save_debug_artifacts(page, result, prefix="send_button_not_found")
@@ -194,12 +201,12 @@ async def send_message_to_ad(
             verification = await verify_message_sent(page, input_locator, message_text)
             result.update(verification)
             result["final_url"] = page.url
+            result.update(await collect_chat_diagnostics(page))
 
             if verification.get("delivery_verified"):
                 result["ok"] = True
                 result["status"] = "sent"
                 result["sent"] = True
-
                 await save_debug_artifacts(page, result, prefix="sent_success")
                 return result
 

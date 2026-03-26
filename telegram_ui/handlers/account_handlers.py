@@ -19,7 +19,7 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
-from olx.account_session import check_account_with_proxy
+from olx.account_session import check_account_alive
 from olx.profile_manager_gologin import (
     delete_account_gologin_profile,
     sync_account_profile_cookies,
@@ -52,23 +52,94 @@ def account_display_name(account: dict, fallback_index: int | None = None) -> st
 def humanize_account_status(status: str | None) -> str:
     value = (status or "").strip().lower()
 
-    if value in {"connected", "working", "checked"}:
+    if value in {"connected", "working"}:
         return "живой"
+    if value == "timeout":
+        return "timeout"
+    if value == "unstable":
+        return "нестабильный"
+    if value == "not_logged_in":
+        return "не авторизован"
+    if value == "cloudfront_blocked":
+        return "заблокирован olx"
+    if value == "proxy_failed":
+        return "ошибка прокси"
+    if value == "missing_proxy":
+        return "нет прокси"
+    if value == "proxy_not_found":
+        return "прокси не найден"
+    if value == "missing_cookies":
+        return "нет cookies"
+    if value == "failed":
+        return "ошибка проверки"
 
-    if value in {
-        "failed",
+    return "не проверен"
+
+
+def humanize_proxy_status(status: str | None) -> str:
+    value = (status or "").strip().lower()
+
+    if value in {"working", "connected", "checked"}:
+        return "живой"
+    if value == "timeout":
+        return "timeout"
+    if value == "unstable":
+        return "нестабильный"
+    if value == "cloudfront_blocked":
+        return "заблокирован olx"
+    if value == "proxy_failed":
+        return "ошибка прокси"
+    if value == "failed":
+        return "ошибка проверки"
+
+    return "не проверен"
+
+
+def normalize_account_status_for_db(raw_status: str | None) -> str:
+    value = (raw_status or "").strip().lower()
+
+    allowed_statuses = {
+        "connected",
+        "timeout",
+        "unstable",
+        "not_logged_in",
+        "cloudfront_blocked",
         "proxy_failed",
-        "invalid_cookies",
         "missing_proxy",
         "proxy_not_found",
         "missing_cookies",
-        "cloudfront_blocked",
-        "login_required_or_chat_blocked",
-        "not_logged_in",
-    }:
-        return "мёртвый"
+        "failed",
+    }
 
-    return "не проверен"
+    if value in allowed_statuses:
+        return value
+
+    return "failed"
+
+
+def normalize_proxy_status_from_account_check(account_status: str | None) -> str:
+    value = (account_status or "").strip().lower()
+
+    if value == "connected":
+        return "working"
+
+    if value in {"timeout"}:
+        return "timeout"
+
+    if value in {"unstable"}:
+        return "unstable"
+
+    if value in {"cloudfront_blocked"}:
+        return "cloudfront_blocked"
+
+    if value in {"proxy_failed"}:
+        return "proxy_failed"
+
+    if value in {"not_logged_in"}:
+        # Прокси при этом может быть живой, просто аккаунт неавторизован
+        return "working"
+
+    return "failed"
 
 
 def short_proxy_text(proxy_text: str, max_len: int = 60) -> str:
@@ -128,12 +199,7 @@ def build_account_proxy_select_keyboard(account_id: int, proxies: list[dict]) ->
 
     for index, proxy in enumerate(proxies, start=1):
         proxy_text = proxy.get("proxy_text", "")
-        status = proxy.get("status", "unknown")
-        ui_status = (
-            "живой"
-            if status in {"working", "connected", "checked"}
-            else ("мёртвый" if status == "failed" else "не проверен")
-        )
+        ui_status = humanize_proxy_status(proxy.get("status"))
         short_proxy = short_proxy_text(proxy_text, max_len=42)
 
         keyboard.append([
@@ -162,7 +228,7 @@ def parse_cookies_json(text: str) -> str | None:
 
 def build_account_check_result_text(account: dict, proxy: dict, result: dict) -> str:
     profile_name = account_display_name(account)
-    ui_status = "живой" if result.get("status") == "connected" else "мёртвый"
+    ui_status = humanize_account_status(result.get("status"))
     final_url = result.get("final_url") or "—"
     error = result.get("error")
     browser_engine = result.get("browser_engine") or account.get("browser_engine") or "—"
@@ -177,6 +243,15 @@ def build_account_check_result_text(account: dict, proxy: dict, result: dict) ->
         f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=60)}",
         f"Final URL: {final_url}",
     ]
+
+    if result.get("page_title"):
+        lines.append(f"Title: {result['page_title']}")
+
+    if result.get("body_length") is not None:
+        lines.append(f"Body length: {result['body_length']}")
+
+    if result.get("attempts_used"):
+        lines.append(f"Attempts: {result['attempts_used']}")
 
     if error:
         lines.append(f"Ошибка: {error}")
@@ -420,7 +495,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Прокси: {short_proxy_text(proxy_text or '', max_len=50)}"
         )
 
-        result = await check_account_with_proxy(
+        result = await check_account_alive(
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             headless=True,
@@ -433,15 +508,13 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         if profile_name:
             update_account_profile_name(user_id, account_id, profile_name)
 
-        result_status = (result.get("status") or "failed").strip().lower()
+        result_status = normalize_account_status_for_db(result.get("status"))
         update_account_status(user_id, account_id, result_status)
         update_account_last_check(user_id, account_id)
         update_proxy_last_check(user_id, proxy["id"])
 
-        if result_status == "connected":
-            update_proxy_status(user_id, proxy["id"], "working")
-        else:
-            update_proxy_status(user_id, proxy["id"], "failed")
+        normalized_proxy_status = normalize_proxy_status_from_account_check(result_status)
+        update_proxy_status(user_id, proxy["id"], normalized_proxy_status)
 
         updated_account = get_account_by_id(user_id, account_id)
 

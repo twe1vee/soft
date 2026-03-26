@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from olx.browser_session import PT_HOME_URL, dismiss_cookie_banner_if_present
@@ -41,6 +42,40 @@ def _to_cdp_endpoint(debugger_address: str) -> str:
 def _classify_proxy_error(error_text: str) -> tuple[str, str]:
     lowered = (error_text or "").lower()
 
+    if "cloudfront" in lowered or "access denied" in lowered:
+        return "cloudfront_blocked", "OLX/CloudFront blocked the request"
+
+    timeout_markers = [
+        "net::err_timed_out",
+        "timed out",
+        "timeout",
+    ]
+    for marker in timeout_markers:
+        if marker in lowered:
+            return "timeout", error_text or "Превышено время ожидания при проверке прокси"
+
+    proxy_markers = [
+        "net::err_proxy",
+        "proxy authentication required",
+        "proxy error",
+        "407",
+        "tunnel connection failed",
+        "net::err_no_supported_proxies",
+        "net::err_socks_connection_failed",
+        "net::err_connection_closed",
+        "net::err_connection_reset",
+        "net::err_connection_refused",
+        "remote end closed connection without response",
+        "connection aborted",
+        "connection refused",
+        "name not resolved",
+        "net::err_name_not_resolved",
+        "dns",
+    ]
+    for marker in proxy_markers:
+        if marker in lowered:
+            return "proxy_failed", error_text
+
     fatal_profile_markers = [
         "profile stopped",
         "unable to open database file",
@@ -48,24 +83,10 @@ def _classify_proxy_error(error_text: str) -> tuple[str, str]:
         "browser has been closed",
         "context closed",
         "connection closed",
-        "net::err_proxy",
-        "proxy check failed",
-        "proxy error",
-        "proxy authentication required",
-        "407",
-        "remote end closed connection without response",
-        "connection aborted",
-        "connection refused",
-        "timeout",
-        "timed out",
     ]
-
     for marker in fatal_profile_markers:
         if marker in lowered:
             return "failed", error_text
-
-    if "cloudfront" in lowered or "access denied" in lowered:
-        return "failed", "OLX/CloudFront blocked the request"
 
     return "failed", error_text or "Неизвестная ошибка проверки прокси"
 
@@ -79,12 +100,60 @@ async def _assert_browser_alive(browser, context, page) -> None:
         if page is None:
             raise RuntimeError("Page не была создана")
 
-        # Простая проверка, что браузер и страница ещё живы
         await page.evaluate("() => document.readyState")
     except PlaywrightError as exc:
         raise RuntimeError(f"Профиль остановился во время проверки: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Профиль остановился во время проверки: {exc}") from exc
+
+
+async def _open_olx_with_retry(page, attempts: int = 2) -> tuple[str | None, str | None, str | None]:
+    last_error: str | None = None
+    last_title: str | None = None
+    last_body: str | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await page.goto(
+                PT_HOME_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            await page.wait_for_timeout(4000)
+
+            try:
+                await dismiss_cookie_banner_if_present(page)
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(1500)
+
+            try:
+                last_title = await page.title()
+            except Exception:
+                last_title = None
+
+            try:
+                last_body = await page.locator("body").inner_text(timeout=7000)
+            except Exception:
+                last_body = ""
+
+            return page.url, last_title, last_body
+
+        except PlaywrightTimeoutError as exc:
+            last_error = str(exc)
+        except Exception as exc:
+            last_error = str(exc)
+
+        if attempt < attempts:
+            try:
+                await page.wait_for_timeout(3000)
+                await page.goto("about:blank", timeout=10000)
+                await page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+    raise RuntimeError(last_error or "Не удалось открыть OLX через прокси")
 
 
 async def check_proxy_alive(
@@ -102,6 +171,8 @@ async def check_proxy_alive(
         "gologin_profile_name": None,
         "debugger_address": None,
         "error": None,
+        "attempts_used": 0,
+        "body_length": 0,
     }
 
     if not (proxy_text or "").strip():
@@ -146,50 +217,40 @@ async def check_proxy_alive(
             context = await browser.new_context()
 
         page = await context.new_page()
-        await page.goto(PT_HOME_URL, wait_until="domcontentloaded", timeout=90000)
-        await page.wait_for_timeout(3000)
 
         await _assert_browser_alive(browser, context, page)
 
-        try:
-            await dismiss_cookie_banner_if_present(page)
-        except Exception:
-            pass
-
-        await page.wait_for_timeout(1000)
-        await _assert_browser_alive(browser, context, page)
-
-        result["final_url"] = page.url
-
-        try:
-            result["page_title"] = await page.title()
-        except Exception:
-            result["page_title"] = None
-
-        try:
-            body_text = await page.locator("body").inner_text(timeout=5000)
-        except Exception as exc:
-            raise RuntimeError(f"Не удалось прочитать body страницы: {exc}") from exc
+        result["attempts_used"] = 2
+        final_url, page_title, body_text = await _open_olx_with_retry(page, attempts=2)
 
         await _assert_browser_alive(browser, context, page)
 
-        if _looks_blocked(result["page_title"] or "", body_text or "", page.url or ""):
-            result["status"] = "failed"
+        result["final_url"] = final_url
+        result["page_title"] = page_title
+        result["body_length"] = len((body_text or "").strip())
+
+        if _looks_blocked(page_title or "", body_text or "", final_url or ""):
+            result["status"] = "cloudfront_blocked"
             result["error"] = "OLX/CloudFront blocked the request"
             return result
 
-        body_len = len((body_text or "").strip())
-        if not page.url or body_len <= 100:
-            result["status"] = "failed"
-            result["error"] = "Proxy opened profile, but OLX content was not confirmed"
+        if not final_url:
+            result["status"] = "timeout"
+            result["error"] = "OLX не открылся через прокси"
             return result
 
-        # Дополнительная стабильность: профиль не должен отвалиться сразу после загрузки
+        # Если сайт открылся, но контента мало — не считаем сразу мёртвым.
+        if result["body_length"] <= 50:
+            result["status"] = "unstable"
+            result["error"] = "OLX открылся, но контент страницы подтвердился слабо"
+            return result
+
         await page.wait_for_timeout(2000)
         await _assert_browser_alive(browser, context, page)
 
         result["ok"] = True
         result["status"] = "working"
+        result["error"] = None
         return result
 
     except Exception as exc:

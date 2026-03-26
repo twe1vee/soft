@@ -23,11 +23,44 @@ def proxy_short(proxy_text: str, max_len: int = 45) -> str:
 
 def humanize_proxy_status(status: str | None) -> str:
     value = (status or "").strip().lower()
+
     if value in {"working", "connected", "checked"}:
         return "живой"
-    if value in {"failed", "proxy_failed", "dead"}:
-        return "мёртвый"
+
+    if value in {"timeout"}:
+        return "timeout"
+
+    if value in {"unstable"}:
+        return "нестабильный"
+
+    if value in {"cloudfront_blocked"}:
+        return "заблокирован olx"
+
+    if value in {"proxy_failed"}:
+        return "ошибка прокси"
+
+    if value in {"failed", "dead"}:
+        return "ошибка проверки"
+
     return "не проверен"
+
+
+def normalize_proxy_status_for_db(raw_status: str | None) -> str:
+    value = (raw_status or "").strip().lower()
+
+    allowed_statuses = {
+        "working",
+        "timeout",
+        "unstable",
+        "cloudfront_blocked",
+        "proxy_failed",
+        "failed",
+    }
+
+    if value in allowed_statuses:
+        return value
+
+    return "failed"
 
 
 async def safe_edit_message_text(query, text: str, reply_markup=None, **kwargs):
@@ -188,11 +221,8 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
         update_proxy_last_check(user_id, proxy_id)
 
-        result_status = (result.get("status") or "failed").strip().lower()
-        if result_status == "working":
-            update_proxy_status(user_id, proxy_id, "working")
-        else:
-            update_proxy_status(user_id, proxy_id, "failed")
+        result_status = normalize_proxy_status_for_db(result.get("status"))
+        update_proxy_status(user_id, proxy_id, result_status)
 
         updated_proxy = get_proxy_by_id(user_id, proxy_id)
         ui_status = humanize_proxy_status(updated_proxy.get("status"))
@@ -204,6 +234,15 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
             f"Engine: {result.get('browser_engine') or 'gologin'}",
             f"Final URL: {result.get('final_url') or '—'}",
         ]
+
+        if result.get("page_title"):
+            text_lines.append(f"Title: {result['page_title']}")
+
+        if result.get("body_length") is not None:
+            text_lines.append(f"Body length: {result['body_length']}")
+
+        if result.get("attempts_used"):
+            text_lines.append(f"Attempts: {result['attempts_used']}")
 
         if result.get("error"):
             text_lines.append(f"Ошибка: {result['error']}")

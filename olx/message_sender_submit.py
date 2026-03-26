@@ -6,11 +6,42 @@ from olx.message_sender_chat import has_chat_root
 from olx.message_sender_debug import normalize_text
 from olx.message_sender_page import page_body_text
 
+
 SEND_BUTTON_TEXTS = [
     "Enviar mensagem",
     "Wyślij",
     "Отправить",
     "Send",
+    "Enviar",
+]
+
+STRICT_SEND_BUTTON_SELECTORS = [
+    'button[aria-label="Submit message"]',
+    'button[type="submit"]',
+    'form button[type="submit"]',
+    '[data-testid="chat"] button[type="submit"]',
+    '[data-testid="chat-modal"] button[type="submit"]',
+    '#chatPortalRoot button[type="submit"]',
+    '#root-portal button[type="submit"]',
+    '[data-testid*="chat"] button[type="submit"]',
+    '[data-testid*="conversation"] button[type="submit"]',
+    '[role="dialog"] button[type="submit"]',
+    '[data-testid="send-button"]',
+    '[data-testid*="send"]',
+    'button[aria-label*="send" i]',
+    'button[aria-label*="submit" i]',
+    'button[title*="send" i]',
+    'button[title*="enviar" i]',
+]
+
+MESSAGE_SURFACE_SELECTORS = [
+    "#chatPortalRoot *",
+    "#root-portal *",
+    '[data-testid="chat"] *',
+    '[data-testid="chat-modal"] *',
+    '[data-testid*="chat"] *',
+    '[data-testid*="conversation"] *',
+    '[role="dialog"] *',
 ]
 
 
@@ -18,8 +49,14 @@ async def fill_message_input(locator, message_text: str) -> None:
     tag_name = await locator.evaluate("(el) => el.tagName.toLowerCase()")
 
     if tag_name == "textarea":
-        await locator.fill(message_text)
-        return
+        try:
+            await locator.fill(message_text)
+            return
+        except Exception:
+            await locator.click()
+            await locator.press("Control+A")
+            await locator.type(message_text, delay=20)
+            return
 
     contenteditable = await locator.evaluate(
         "(el) => el.getAttribute('contenteditable')"
@@ -29,7 +66,13 @@ async def fill_message_input(locator, message_text: str) -> None:
         try:
             await locator.fill(message_text)
         except Exception:
-            await locator.type(message_text, delay=20)
+            try:
+                await locator.evaluate(
+                    "(el, value) => { el.innerHTML = ''; el.textContent = value; }",
+                    message_text,
+                )
+            except Exception:
+                await locator.type(message_text, delay=20)
         return
 
     try:
@@ -39,43 +82,70 @@ async def fill_message_input(locator, message_text: str) -> None:
         await locator.type(message_text, delay=20)
 
 
+async def _is_clickable_send_button(locator) -> bool:
+    try:
+        if await locator.count() == 0:
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not await locator.is_visible():
+            return False
+    except Exception:
+        return False
+
+    try:
+        disabled = await locator.get_attribute("disabled")
+        aria_disabled = await locator.get_attribute("aria-disabled")
+        if disabled is not None:
+            return False
+        if (aria_disabled or "").lower() == "true":
+            return False
+    except Exception:
+        pass
+
+    return True
+
+
 async def click_send_button(page, input_locator) -> bool:
-    strict_candidates = [
-        page.locator('button[aria-label="Submit message"]').first,
-        page.locator('button[type="submit"]').first,
-        page.locator('form button[type="submit"]').first,
-        page.locator('[data-testid="chat"] button[type="submit"]').first,
-        page.locator('[data-testid="chat-modal"] button[type="submit"]').first,
-        page.locator('#chatPortalRoot button[type="submit"]').first,
-        page.locator('#root-portal button[type="submit"]').first,
-    ]
+    for selector in STRICT_SEND_BUTTON_SELECTORS:
+        locator = page.locator(selector).first
 
-    for locator in strict_candidates:
         try:
-            if await locator.count() == 0:
-                continue
+            await locator.wait_for(state="attached", timeout=2500)
+        except Exception:
+            pass
 
-            await locator.wait_for(state="visible", timeout=3000)
+        if not await _is_clickable_send_button(locator):
+            continue
+
+        try:
             await locator.scroll_into_view_if_needed()
+        except Exception:
+            pass
 
-            try:
-                box = await locator.bounding_box()
-                if box:
-                    x = box["x"] + box["width"] / 2
-                    y = box["y"] + box["height"] / 2
-                    await page.mouse.move(x, y)
-                    await page.wait_for_timeout(100)
-                    await page.mouse.click(x, y)
-                    return True
-            except Exception:
-                pass
+        try:
+            box = await locator.bounding_box()
+            if box:
+                x = box["x"] + box["width"] / 2
+                y = box["y"] + box["height"] / 2
+                await page.mouse.move(x, y)
+                await page.wait_for_timeout(100)
+                await page.mouse.click(x, y)
+                return True
+        except Exception:
+            pass
 
-            try:
-                await locator.click(timeout=3000)
-                return True
-            except Exception:
-                await locator.click(force=True, timeout=3000)
-                return True
+        try:
+            await locator.click(timeout=3000)
+            return True
+        except Exception:
+            pass
+
+        try:
+            await locator.click(force=True, timeout=3000)
+            return True
         except Exception:
             continue
 
@@ -85,6 +155,7 @@ async def click_send_button(page, input_locator) -> bool:
             [
                 page.get_by_role("button", name=text),
                 page.locator(f"button:has-text('{text}')"),
+                page.locator(f"[role='dialog'] button:has-text('{text}')"),
             ]
         )
 
@@ -96,31 +167,52 @@ async def click_send_button(page, input_locator) -> bool:
 
         for i in range(count):
             item = locator.nth(i)
+
+            if not await _is_clickable_send_button(item):
+                continue
+
             try:
-                if not await item.is_visible():
-                    continue
+                item_type = await item.get_attribute("type")
+            except Exception:
+                item_type = None
 
-                try:
-                    item_type = await item.get_attribute("type")
-                except Exception:
-                    item_type = None
+            try:
+                aria_label = await item.get_attribute("aria-label")
+            except Exception:
+                aria_label = None
 
-                try:
-                    aria_label = await item.get_attribute("aria-label")
-                except Exception:
-                    aria_label = None
+            try:
+                test_id = await item.get_attribute("data-testid")
+            except Exception:
+                test_id = None
 
-                if item_type == "submit" or aria_label == "Submit message":
-                    await item.scroll_into_view_if_needed()
-                    try:
-                        await item.click(timeout=3000)
-                    except Exception:
-                        await item.click(force=True, timeout=3000)
-                    return True
+            allow_click = (
+                item_type == "submit"
+                or (aria_label or "").lower() == "submit message"
+                or "send" in (test_id or "").lower()
+            )
+
+            if not allow_click:
+                continue
+
+            try:
+                await item.scroll_into_view_if_needed()
+            except Exception:
+                pass
+
+            try:
+                await item.click(timeout=3000)
+                return True
+            except Exception:
+                pass
+
+            try:
+                await item.click(force=True, timeout=3000)
+                return True
             except Exception:
                 continue
 
-    for hotkey in ("Control+Enter", "Enter"):
+    for hotkey in ("Control+Enter", "Meta+Enter", "Enter"):
         try:
             await input_locator.focus()
         except Exception:
@@ -128,6 +220,7 @@ async def click_send_button(page, input_locator) -> bool:
 
         try:
             await input_locator.press(hotkey)
+            await page.wait_for_timeout(300)
             return True
         except Exception:
             continue
@@ -174,7 +267,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         "post_send_exact_message_match_count": 0,
     }
 
-    for _ in range(8):
+    for _ in range(10):
         await page.wait_for_timeout(1000)
 
         try:
@@ -187,6 +280,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         except Exception:
             pass
 
+        input_value = ""
         try:
             input_value = await read_input_value(input_locator)
             verification["post_send_input_empty"] = not bool(input_value)
@@ -202,10 +296,10 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
             verification["post_send_body_has_text"] = False
 
         exact_match_count = 0
-
         try:
             exact_locator = page.get_by_text(message_text, exact=True)
             exact_match_count = await exact_locator.count()
+
             if exact_match_count > 0:
                 for i in range(min(exact_match_count, 5)):
                     item = exact_locator.nth(i)
@@ -219,16 +313,12 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
             pass
 
         if not verification["post_send_message_visible"]:
-            for selector in [
-                "#chatPortalRoot *",
-                "#root-portal *",
-                '[data-testid="chat"] *',
-                '[data-testid="chat-modal"] *',
-            ]:
+            for selector in MESSAGE_SURFACE_SELECTORS:
                 try:
                     locator = page.locator(selector)
                     count = await locator.count()
-                    for i in range(min(count, 80)):
+
+                    for i in range(min(count, 120)):
                         item = locator.nth(i)
                         try:
                             if not await item.is_visible():
@@ -240,6 +330,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
                                 break
                         except Exception:
                             continue
+
                     if verification["post_send_message_visible"]:
                         break
                 except Exception:
@@ -248,6 +339,18 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         verification["post_send_exact_message_match_count"] = exact_match_count
 
         if verification["post_send_message_visible"] and verification["post_send_input_empty"]:
+            verification["delivery_verified"] = True
+            return verification
+
+        if verification["post_send_input_empty"] and verification["post_send_chat_root_found"]:
+            verification["delivery_verified"] = True
+            return verification
+
+        if (
+            verification["post_send_body_has_text"]
+            and verification["post_send_chat_root_found"]
+            and verification["post_send_input_empty"]
+        ):
             verification["delivery_verified"] = True
             return verification
 
