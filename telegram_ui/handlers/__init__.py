@@ -33,10 +33,14 @@ from telegram_ui.handlers.template_handlers import (
     handle_template_callback,
     handle_editing_template_text,
 )
+from telegram_ui.handlers.common import get_current_user
+from telegram_ui.menu import build_back_to_menu_keyboard
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    context.user_data["current_user"] = get_current_user(update)
+
     await query.answer()
     data = query.data or ""
 
@@ -75,6 +79,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
+    context.user_data["current_user"] = get_current_user(update)
 
     if context.user_data.get("editing_template"):
         await handle_editing_template_text(update, context, text)
@@ -99,10 +104,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_account_cookies_text(update, context, text)
         return
 
-    await handle_links_text(update, context, text)
+    if context.user_data.get("awaiting_links"):
+        await handle_links_text(update, context, text)
+        return
+
+    await update.message.reply_text(
+        "Сейчас я не жду обычный текст.\n\n"
+        "Выбери действие в меню и затем пришли нужные данные.",
+        reply_markup=build_back_to_menu_keyboard(),
+    )
 
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["current_user"] = get_current_user(update)
+
     if context.user_data.get("awaiting_proxies"):
         await handle_proxies_document(update, context)
         return

@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from db import get_conversation_by_id
 from olx.dialogs_reply import send_reply_to_conversation
 from telegram_ui.menu import build_back_to_menu_keyboard
+from telegram_ui.handlers.common import get_current_user
 
 
 def build_dialog_reply_result_text(conversation: dict | None, result: dict) -> str:
@@ -50,8 +51,17 @@ async def handle_dialog_callback(
             return
 
         _, conversation_id_str, account_id_str = parts
-        context.user_data["reply_conversation_id"] = int(conversation_id_str)
-        context.user_data["reply_account_id"] = int(account_id_str)
+
+        try:
+            conversation_id = int(conversation_id_str)
+            account_id = int(account_id_str)
+        except ValueError:
+            await query.answer("Некорректные данные", show_alert=True)
+            return
+
+        context.user_data.pop("awaiting_links", None)
+        context.user_data["reply_conversation_id"] = conversation_id
+        context.user_data["reply_account_id"] = account_id
 
         await query.message.reply_text("Пришли текст ответа следующим сообщением.")
         await query.answer()
@@ -75,12 +85,17 @@ async def handle_dialog_reply_text(
         )
         return
 
-    current_user = context.user_data.get("current_user")
-    if not current_user:
-        from telegram_ui.handlers.common import get_current_user
-        current_user = get_current_user(update)
+    if not text.strip():
+        await update.message.reply_text(
+            "Текст ответа пустой. Пришли нормальный текст одним сообщением.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
 
+    current_user = get_current_user(update)
+    context.user_data["current_user"] = current_user
     user_id = current_user["id"]
+
     conversation = get_conversation_by_id(user_id, int(conversation_id))
 
     await update.message.reply_text("⏳ Отправляю ответ продавцу...")

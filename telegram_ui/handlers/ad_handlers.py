@@ -1,7 +1,7 @@
 import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from db import (
@@ -118,6 +118,10 @@ async def safe_edit_message_text(
             reply_markup=reply_markup,
         )
         return
+    except BadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        raise
     except (TimedOut, NetworkError):
         pass
 
@@ -131,11 +135,26 @@ async def safe_edit_message_text(
         raise
 
 
+def _extract_unique_olx_urls(text: str) -> list[str]:
+    seen = set()
+    result = []
+
+    for url in re.findall(OLX_URL_PATTERN, text or "", re.IGNORECASE):
+        normalized = url.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+
+    return result[:MAX_URLS_PER_MESSAGE]
+
+
 async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     current_user = get_current_user(update)
+    context.user_data["current_user"] = current_user
     user_id = current_user["id"]
 
-    urls = re.findall(OLX_URL_PATTERN, text, re.IGNORECASE)
+    urls = _extract_unique_olx_urls(text)
     if not urls:
         await update.message.reply_text(
             "Пришли до 5 ссылок OLX одним сообщением.",
@@ -143,7 +162,7 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         return
 
-    urls = urls[:MAX_URLS_PER_MESSAGE]
+    context.user_data.pop("awaiting_links", None)
 
     for url in urls:
         try:
@@ -218,11 +237,10 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             reply_markup=keyboard,
         )
 
-    context.user_data.clear()
-
 
 async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     current_user = get_current_user(update)
+    context.user_data["current_user"] = current_user
     user_id = current_user["id"]
 
     editing_ad_id = context.user_data.get("editing_ad_id")
@@ -245,8 +263,16 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data.pop("editing_action_id", None)
         return
 
-    new_text = text
+    new_text = text.strip()
+    if not new_text:
+        await update.message.reply_text(
+            "Новый текст пустой. Пришли нормальный текст одним сообщением.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
+
     update_ad_draft(user_id, editing_ad_id, new_text, new_status="draft_ready")
+    update_pending_action_status(editing_action_id, "pending")
 
     ad = get_ad_by_id(user_id, editing_ad_id)
 
@@ -270,6 +296,7 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     current_user = get_current_user(update)
+    context.user_data["current_user"] = current_user
     user_id = current_user["id"]
     query = update.callback_query
     parts = data.split(":")
@@ -366,6 +393,7 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         if action == "edit":
+            context.user_data.pop("awaiting_links", None)
             context.user_data["editing_ad_id"] = ad_row_id
             context.user_data["editing_action_id"] = pending_action_id
             await query.message.reply_text(
