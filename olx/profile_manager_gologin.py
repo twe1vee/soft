@@ -292,7 +292,7 @@ def delete_gologin_profile(profile_id: str | None) -> None:
     delete_gologin_profiles([profile_id])
 
 
-def touch_account_last_used(*, account_id: int, ts: int | None = None) -> bool:
+def touch_account_last_used( account_id: int, ts: int | None = None) -> bool:
     account_id = int(account_id)
     ts = int(ts or time.time())
 
@@ -347,7 +347,6 @@ def sync_account_profile_cookies(
         }
 
     cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
-    touch_account_last_used(account_id)
     touch_account_last_used(account_id=account_id)
 
     return {

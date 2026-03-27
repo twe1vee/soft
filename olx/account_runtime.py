@@ -40,7 +40,7 @@ class AccountRuntimeEntry:
     def touch(self) -> None:
         self.last_used_monotonic = time.monotonic()
         try:
-            touch_account_last_used(self.account_id)
+            touch_account_last_used(account_id=self.account_id)
         except Exception as exc:
             _runtime_debug(f"touch_db_failed account_id={self.account_id} error={exc}")
         runtime = self.runtime or {}

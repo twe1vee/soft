@@ -166,9 +166,19 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         if ad_exists(user_id, ad_id):
             existing_ad = get_ad_by_ad_id(user_id, ad_id)
+            global_views = count_global_ad_views(ad_id)
+
+            pending_action_id = create_pending_action(
+                ad_db_id=existing_ad["id"],
+                action_type="review_draft",
+                payload_text=existing_ad.get("draft_text") or "",
+            )
+
+            eye_note = f"\n\n👁 Просмотров этого объявления: {global_views}"
+
             await update.message.reply_text(
-                f"Это объявление уже смотрели ранее.\n\nID в базе: {existing_ad['id']}",
-                reply_markup=build_back_to_menu_keyboard(),
+                build_ad_caption(existing_ad) + eye_note,
+                reply_markup=build_action_keyboard(existing_ad["id"], pending_action_id),
             )
             continue
 
@@ -475,12 +485,24 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             + f"Proxy ID: {proxy['id']}",
         )
 
+        print(
+            f"[approve_send] user_id={user_id} "
+            f"ad_row_id={ad_row_id} "
+            f"pending_action_id={pending_action_id} "
+            f"account_id={account_id} "
+            f"proxy_id={proxy_id} "
+            f"ad_url={ad_url}"
+        )
+
         result = await send_message_to_ad(
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             ad_url=ad_url,
             message_text=draft_text,
             headless=True,
+            user_id=user_id,
+            account_id=account_id,
+            olx_profile_name=account.get("olx_profile_name"),
         )
 
         send_status = result.get("status") or "unknown_error"
