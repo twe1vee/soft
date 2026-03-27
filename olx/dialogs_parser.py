@@ -214,17 +214,24 @@ def guess_message_direction(
     if seller and seller in text:
         return "incoming"
 
-    if text.startswith("você:") or text.startswith("tu:"):
+    if seller and seller in preview:
+        return "incoming"
+
+    if text.startswith("você:") or text.startswith("tu:") or text.startswith("you:") or text.startswith("eu:"):
         return "outgoing"
 
-    if "you:" in text:
+    if preview.startswith("você:") or preview.startswith("tu:") or preview.startswith("you:") or preview.startswith("eu:"):
         return "outgoing"
 
-    if "respondeu" in preview or "enviou uma mensagem" in preview:
+    if (
+        "respondeu" in preview
+        or "enviou uma mensagem" in preview
+        or "mandou mensagem" in preview
+        or "nova mensagem" in preview
+    ):
         return "incoming"
 
     return "unknown"
-
 
 async def extract_dialog_href(locator: Locator) -> str | None:
     candidates = [

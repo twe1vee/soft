@@ -11,7 +11,7 @@ from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
 from olx.profile_manager_gologin import AccountRuntimeBlockedError
 
-DIALOGS_POLL_INTERVAL_SECONDS = 180
+DIALOGS_POLL_INTERVAL_SECONDS = 60
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
 
 
@@ -21,14 +21,18 @@ async def run_dialogs_polling_for_user(
     user_id: int,
     telegram_chat_id: int,
 ) -> dict:
-    accounts = get_user_accounts(user_id)
+    print(f"[dialogs_jobs] start user_id={user_id} telegram_chat_id={telegram_chat_id}")
 
+    accounts = get_user_accounts(user_id)
     alive_accounts: list[dict] = []
     proxies_by_id: dict[int, dict] = {}
+
+    print(f"[dialogs_jobs] loaded_accounts user_id={user_id} total={len(accounts)}")
 
     for account in accounts:
         account_id = account.get("id")
         if not account_id:
+            print(f"[dialogs_jobs] skip account without id user_id={user_id}")
             continue
 
         fresh_account = get_account_by_id(user_id, account_id)
@@ -43,6 +47,14 @@ async def run_dialogs_polling_for_user(
             proxy = get_proxy_by_id(user_id, proxy_id)
             if proxy:
                 proxies_by_id[proxy_id] = proxy
+                print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
+            else:
+                print(f"[dialogs_jobs] proxy missing account_id={account_id} proxy_id={proxy_id}")
+
+    print(
+        f"[dialogs_jobs] polling user_id={user_id} "
+        f"alive_accounts={len(alive_accounts)} proxies={len(proxies_by_id)}"
+    )
 
     result = await check_user_dialogs(
         user_id=user_id,
@@ -51,12 +63,41 @@ async def run_dialogs_polling_for_user(
         headless=True,
     )
 
+    print(
+        f"[dialogs_jobs] result user_id={user_id} "
+        f"checked={result.get('accounts_checked', 0)} "
+        f"skipped={result.get('accounts_skipped', 0)} "
+        f"new_incoming={result.get('total_new_incoming_count', 0)} "
+        f"events={len(result.get('new_incoming_events', []))}"
+    )
+
+    for account_result in result.get("account_results", []):
+        print(
+            f"[dialogs_jobs] account_result "
+            f"user_id={user_id} "
+            f"account_id={account_result.get('account_id')} "
+            f"status={account_result.get('status')} "
+            f"parsed={account_result.get('parsed_dialogs_count', 0)} "
+            f"new_incoming={account_result.get('new_incoming_count', 0)} "
+            f"error={account_result.get('error')}"
+        )
+
     accounts_by_id = {a["id"]: a for a in alive_accounts}
-    await send_incoming_dialog_notifications(
+
+    sent_notifications = await send_incoming_dialog_notifications(
         bot=application.bot,
         chat_id=telegram_chat_id,
         events=result.get("new_incoming_events", []),
         accounts_by_id=accounts_by_id,
+    )
+
+    result["sent_notifications"] = sent_notifications
+
+    print(
+        f"[dialogs_jobs] notifier_done "
+        f"user_id={user_id} "
+        f"events={len(result.get('new_incoming_events', []))} "
+        f"sent_notifications={sent_notifications}"
     )
 
     return result
@@ -64,12 +105,17 @@ async def run_dialogs_polling_for_user(
 
 async def run_dialogs_polling_iteration(application) -> None:
     users = get_active_users()
+    print(f"[dialogs_jobs] iteration_start users={len(users)}")
 
     for user in users:
         telegram_id = user.get("telegram_id")
         user_id = user.get("id")
 
         if not telegram_id or not user_id:
+            print(
+                f"[dialogs_jobs] skip invalid user "
+                f"user_id={user_id} telegram_id={telegram_id}"
+            )
             continue
 
         try:
@@ -83,8 +129,11 @@ async def run_dialogs_polling_iteration(application) -> None:
         except Exception as exc:
             print(f"[dialogs_jobs] user_id={user_id} polling failed: {exc}")
 
+    print("[dialogs_jobs] iteration_done")
+
 
 async def _dialogs_poll_job_callback(context) -> None:
+    print("[dialogs_jobs] poll_job_tick")
     try:
         await run_dialogs_polling_iteration(context.application)
     except AccountRuntimeBlockedError as exc:
@@ -97,6 +146,8 @@ async def _runtime_cleanup_job_callback(context) -> None:
     closed = await close_idle_account_runtimes()
     if closed:
         print(f"[account_runtime] closed idle runtimes: {closed}")
+    else:
+        print("[account_runtime] cleanup tick no idle runtimes")
 
 
 def start_dialogs_jobs(application) -> None:
@@ -107,12 +158,21 @@ def start_dialogs_jobs(application) -> None:
     application.job_queue.run_repeating(
         _dialogs_poll_job_callback,
         interval=DIALOGS_POLL_INTERVAL_SECONDS,
-        first=30,
+        first=15,
         name="dialogs_poll_job",
     )
+    print(
+        f"[dialogs_jobs] dialogs_poll_job added "
+        f"interval={DIALOGS_POLL_INTERVAL_SECONDS} first=15"
+    )
+
     application.job_queue.run_repeating(
         _runtime_cleanup_job_callback,
         interval=RUNTIME_CLEANUP_INTERVAL_SECONDS,
         first=60,
         name="account_runtime_cleanup_job",
+    )
+    print(
+        f"[dialogs_jobs] account_runtime_cleanup_job added "
+        f"interval={RUNTIME_CLEANUP_INTERVAL_SECONDS} first=60"
     )

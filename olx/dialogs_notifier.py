@@ -30,6 +30,7 @@ def build_incoming_dialog_text(event: dict, account: dict | None = None) -> str:
 
     if ad_url:
         lines.extend(["", f"Ссылка на объявление: {ad_url}"])
+
     if conversation_url:
         lines.extend(["", f"Ссылка на диалог: {conversation_url}"])
 
@@ -48,7 +49,6 @@ def build_incoming_dialog_keyboard(event: dict) -> InlineKeyboardMarkup:
             )
         ]
     ]
-
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -62,20 +62,59 @@ async def send_incoming_dialog_notifications(
     sent_count = 0
     accounts_by_id = accounts_by_id or {}
 
+    print(
+        f"[dialogs_notifier] start chat_id={chat_id} "
+        f"events={len(events)}"
+    )
+
     for event in events:
-        text = build_incoming_dialog_text(
-            event,
-            account=accounts_by_id.get(event.get("account_id")),
-        )
-        keyboard = build_incoming_dialog_keyboard(event)
+        account_id = event.get("account_id")
+        conversation_id = event.get("conversation_id")
+        message_id = event.get("message_id")
 
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=keyboard,
-        )
+        try:
+            text = build_incoming_dialog_text(
+                event,
+                account=accounts_by_id.get(account_id),
+            )
+            keyboard = build_incoming_dialog_keyboard(event)
 
-        mark_conversation_message_notified(event["message_id"])
-        sent_count += 1
+            print(
+                f"[dialogs_notifier] send "
+                f"chat_id={chat_id} "
+                f"account_id={account_id} "
+                f"conversation_id={conversation_id} "
+                f"message_id={message_id}"
+            )
 
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+
+            mark_conversation_message_notified(message_id)
+            sent_count += 1
+
+            print(
+                f"[dialogs_notifier] sent "
+                f"chat_id={chat_id} "
+                f"account_id={account_id} "
+                f"conversation_id={conversation_id} "
+                f"message_id={message_id}"
+            )
+
+        except Exception as exc:
+            print(
+                f"[dialogs_notifier] failed "
+                f"chat_id={chat_id} "
+                f"account_id={account_id} "
+                f"conversation_id={conversation_id} "
+                f"message_id={message_id} "
+                f"error={exc}"
+            )
+
+    print(
+        f"[dialogs_notifier] done chat_id={chat_id} sent_count={sent_count}"
+    )
     return sent_count
