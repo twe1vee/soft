@@ -82,9 +82,14 @@ async def send_message_to_ad(
 
     try:
         t_step = time.perf_counter()
+        if not account_id or int(account_id) <= 0:
+            result["status"] = "invalid_input"
+            result["error"] = f"Некорректный account_id для send_message: {account_id}"
+            return result
+
         page, runtime_entry = await open_account_runtime_page(
             user_id=user_id,
-            account_id=account_id or 0,
+            account_id=int(account_id),
             cookies_json=cookies_json,
             proxy_text=proxy_text,
             url=ad_url,

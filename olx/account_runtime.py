@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from db.accounts import touch_account_last_used
 import asyncio
 import contextlib
 import time
@@ -39,6 +39,10 @@ class AccountRuntimeEntry:
 
     def touch(self) -> None:
         self.last_used_monotonic = time.monotonic()
+        try:
+            touch_account_last_used(self.account_id)
+        except Exception as exc:
+            _runtime_debug(f"touch_db_failed account_id={self.account_id} error={exc}")
         runtime = self.runtime or {}
         _runtime_debug(
             f"touch account_id={self.account_id} "
@@ -67,6 +71,11 @@ async def get_account_runtime(
     headless: bool = True,
     olx_profile_name: str | None = None,
 ) -> AccountRuntimeEntry:
+    if not account_id or int(account_id) <= 0:
+        raise ValueError(f"invalid account_id for runtime: {account_id}")
+
+    account_id = int(account_id)
+
     async with _RUNTIME_REGISTRY_LOCK:
         entry = _RUNTIME_BY_ACCOUNT_ID.get(account_id)
         if entry is None:
@@ -146,6 +155,16 @@ async def open_account_runtime_page(
     wait_after_ms: int = 3000,
     busy_reason: str | None = None,
 ) -> tuple[Page, AccountRuntimeEntry]:
+    if not account_id or int(account_id) <= 0:
+        raise ValueError(f"invalid account_id for runtime page: {account_id}")
+
+    account_id = int(account_id)
+
+    _runtime_debug(
+        f"open_page_request account_id={account_id} "
+        f"user_id={user_id} busy_reason={busy_reason} url={url}"
+    )
+
     entry = await get_account_runtime(
         user_id=user_id,
         account_id=account_id,

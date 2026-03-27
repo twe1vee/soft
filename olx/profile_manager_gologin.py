@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,18 +11,24 @@ import requests
 from gologin import GoLogin
 
 from db.accounts import (
+    clear_account_gologin_binding_by_account_id,
     clear_account_gologin_profile,
+    ensure_accounts_last_used_column,
     get_account_by_id,
+    get_stale_accounts_with_profiles,
+    touch_account_last_used,
     update_account_browser_engine,
     update_account_gologin_profile,
 )
 from olx.cookies import normalize_cookies
 
-GOLOGIN_API_BASE = "https://api.gologin.com"
-
 
 class AccountRuntimeBlockedError(RuntimeError):
     pass
+
+
+GOLOGIN_API_BASE = "https://api.gologin.com"
+GOLOGIN_PROFILE_IDLE_DELETE_SECONDS = 3 * 60 * 60
 
 
 def get_gologin_token() -> str:
@@ -36,6 +45,27 @@ def _api_headers() -> dict[str, str]:
     }
 
 
+def _db_path() -> Path:
+    candidates = [
+        os.getenv("OLX_DB_PATH"),
+        os.getenv("DATABASE_PATH"),
+        "olx_assistant.db",
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        p = Path(raw)
+        if p.exists():
+            return p
+    return Path("olx_assistant.db")
+
+
+def _sqlite_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_db_path()))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def build_gologin_client(
     *,
     profile_id: str | None = None,
@@ -43,6 +73,7 @@ def build_gologin_client(
 ) -> GoLogin:
     token = get_gologin_token()
     extra_params: list[str] = []
+
     if headless:
         extra_params.append("--headless=new")
 
@@ -52,7 +83,7 @@ def build_gologin_client(
             "profile_id": profile_id,
             "extra_params": extra_params,
             "uploadCookiesToServer": True,
-            "writeCookesFromServer": True,
+            "writeCookesFromServer": False,
         }
     )
 
@@ -86,7 +117,6 @@ def cookies_to_gologin(cookies_json: str) -> list[dict[str, Any]]:
 
         domain = item.get("domain")
         url = item.get("url")
-
         if domain:
             cookie["domain"] = domain
         elif url:
@@ -134,7 +164,6 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
         port = parsed.port
         username = parsed.username
         password = parsed.password
-
         if not host or not port:
             raise ValueError("proxy_text имеет неверный формат")
 
@@ -201,15 +230,9 @@ def create_profile(profile_name: str) -> str:
             "name": profile_name,
         }
     )
-
-    profile_id = (
-        created.get("id")
-        or created.get("profile_id")
-        or created.get("_id")
-    )
+    profile_id = created.get("id") or created.get("profile_id") or created.get("_id")
     if not profile_id:
         raise RuntimeError(f"GoLogin не вернул profile_id: {created}")
-
     return profile_id
 
 
@@ -225,6 +248,28 @@ def upload_cookies_to_profile(profile_id: str, cookies_json: str) -> int:
     gl = build_gologin_client(profile_id=None, headless=True)
     gl.addCookiesToProfile(profile_id, cookies_payload)
     return len(cookies_payload)
+
+
+def get_all_gologin_profiles(*, limit: int = 500) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{GOLOGIN_API_BASE}/browser/v2",
+        headers=_api_headers(),
+        params={"limit": limit, "page": 1},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in ("profiles", "items", "data", "rows"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+
+    return []
 
 
 def delete_gologin_profiles(profile_ids: list[str]) -> None:
@@ -247,6 +292,42 @@ def delete_gologin_profile(profile_id: str | None) -> None:
     delete_gologin_profiles([profile_id])
 
 
+def touch_account_last_used(*, account_id: int, ts: int | None = None) -> bool:
+    account_id = int(account_id)
+    ts = int(ts or time.time())
+
+    conn = _sqlite_connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(accounts)")
+        columns = {str(row[1]) for row in cursor.fetchall()}
+        if "last_used_at" not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN last_used_at INTEGER DEFAULT NULL")
+            conn.commit()
+
+        cursor.execute(
+            "UPDATE accounts SET last_used_at = ? WHERE id = ?",
+            (ts, account_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def ensure_accounts_last_used_column() -> None:
+    conn = _sqlite_connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(accounts)")
+        columns = {str(row[1]) for row in cursor.fetchall()}
+        if "last_used_at" not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN last_used_at INTEGER DEFAULT NULL")
+            conn.commit()
+    finally:
+        conn.close()
+
+
 def sync_account_profile_cookies(
     *,
     user_id: int,
@@ -266,6 +347,9 @@ def sync_account_profile_cookies(
         }
 
     cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
+    touch_account_last_used(account_id)
+    touch_account_last_used(account_id=account_id)
+
     return {
         "ok": True,
         "synced": True,
@@ -322,16 +406,6 @@ def create_temporary_proxy_profile(
     }
 
 
-def _is_profile_not_found_error(exc: Exception) -> bool:
-    text = str(exc or "").lower()
-    return (
-        "profile deleted or not found" in text
-        or "profile not found" in text
-        or "not found" in text
-        or "404" in text
-    )
-
-
 def ensure_gologin_profile(
     *,
     cookies_json: str,
@@ -346,16 +420,9 @@ def ensure_gologin_profile(
 
     if user_id is not None and account_id is not None:
         account = get_account_by_id(user_id, account_id)
-        if not account:
-            raise AccountRuntimeBlockedError(
-                f"account_id={account_id} not found; runtime/profile creation blocked"
-            )
-
-        existing_profile_id = account.get("gologin_profile_id")
-        existing_profile_name = (
-            account.get("gologin_profile_name")
-            or account.get("olx_profile_name")
-        )
+        if account:
+            existing_profile_id = account.get("gologin_profile_id")
+            existing_profile_name = account.get("gologin_profile_name") or account.get("olx_profile_name")
 
     final_profile_name = _build_profile_name(
         user_id=user_id,
@@ -366,85 +433,21 @@ def ensure_gologin_profile(
     profile_id = existing_profile_id
     profile_name = final_profile_name
 
-    if profile_id:
-        try:
-            proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
-            cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
-        except Exception as exc:
-            if not _is_profile_not_found_error(exc):
-                raise
-
-            if user_id is not None and account_id is not None:
-                fresh_account = get_account_by_id(user_id, account_id)
-                if not fresh_account:
-                    raise AccountRuntimeBlockedError(
-                        f"account_id={account_id} deleted; stale profile recovery blocked"
-                    )
-                clear_account_gologin_profile(user_id, account_id)
-
-            profile_id = None
-        else:
-            if user_id is not None and account_id is not None:
-                fresh_account = get_account_by_id(user_id, account_id)
-                if not fresh_account:
-                    try:
-                        delete_gologin_profile(profile_id)
-                    except Exception:
-                        pass
-                    raise AccountRuntimeBlockedError(
-                        f"account_id={account_id} deleted after existing profile reuse; blocked"
-                    )
-
-                update_account_gologin_profile(
-                    user_id=user_id,
-                    account_id=account_id,
-                    gologin_profile_id=profile_id,
-                    gologin_profile_name=profile_name,
-                )
-                update_account_browser_engine(
-                    user_id=user_id,
-                    account_id=account_id,
-                    browser_engine="gologin",
-                )
-
-            return {
-                "browser_engine": "gologin",
-                "gologin_profile_id": profile_id,
-                "gologin_profile_name": profile_name,
-                "proxy_payload": proxy_payload,
-                "cookies_count": cookies_count,
-            }
-
-    if user_id is not None and account_id is not None:
-        fresh_account = get_account_by_id(user_id, account_id)
-        if not fresh_account:
-            raise AccountRuntimeBlockedError(
-                f"account_id={account_id} not found before new profile creation; blocked"
-            )
-
-    profile_id = create_profile(profile_name)
+    if not profile_id:
+        profile_id = create_profile(profile_name)
 
     try:
         proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
         cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
     except Exception:
-        try:
-            delete_gologin_profile(profile_id)
-        except Exception:
-            pass
-        raise
+        if existing_profile_id:
+            profile_id = create_profile(profile_name)
+            proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
+            cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
+        else:
+            raise
 
     if user_id is not None and account_id is not None:
-        fresh_account = get_account_by_id(user_id, account_id)
-        if not fresh_account:
-            try:
-                delete_gologin_profile(profile_id)
-            except Exception:
-                pass
-            raise AccountRuntimeBlockedError(
-                f"account_id={account_id} deleted after new profile creation; blocked"
-            )
-
         update_account_gologin_profile(
             user_id=user_id,
             account_id=account_id,
@@ -456,6 +459,10 @@ def ensure_gologin_profile(
             account_id=account_id,
             browser_engine="gologin",
         )
+        touch_account_last_used(account_id=account_id)
+
+    if user_id is not None and account_id is not None:
+        touch_account_last_used(account_id)
 
     return {
         "browser_engine": "gologin",
@@ -463,4 +470,135 @@ def ensure_gologin_profile(
         "gologin_profile_name": profile_name,
         "proxy_payload": proxy_payload,
         "cookies_count": cookies_count,
+    }
+
+
+def _select_stale_accounts_with_profiles(*, idle_seconds: int) -> list[dict[str, Any]]:
+    ensure_accounts_last_used_column()
+
+    threshold = int(time.time()) - int(idle_seconds)
+
+    conn = _sqlite_connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, user_id, gologin_profile_id, gologin_profile_name, last_used_at
+            FROM accounts
+            WHERE gologin_profile_id IS NOT NULL
+              AND TRIM(gologin_profile_id) != ''
+              AND last_used_at IS NOT NULL
+              AND last_used_at < ?
+            """,
+            (threshold,),
+        )
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _clear_account_profile_binding_sql(account_id: int) -> None:
+    conn = _sqlite_connect()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE accounts
+            SET gologin_profile_id = NULL,
+                gologin_profile_name = NULL,
+                browser_engine = NULL
+            WHERE id = ?
+            """,
+            (int(account_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cleanup_stale_gologin_profiles(
+    *,
+    idle_seconds: int = GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
+) -> dict[str, Any]:
+    stale_accounts = _select_stale_accounts_with_profiles(idle_seconds=idle_seconds)
+
+    deleted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for item in stale_accounts:
+        account_id = int(item["id"])
+        profile_id = str(item["gologin_profile_id"]).strip()
+
+        try:
+            delete_gologin_profile(profile_id)
+            _clear_account_profile_binding_sql(account_id)
+            deleted.append(
+                {
+                    "account_id": account_id,
+                    "gologin_profile_id": profile_id,
+                    "gologin_profile_name": item.get("gologin_profile_name"),
+                    "last_used_at": item.get("last_used_at"),
+                }
+            )
+        except Exception as exc:
+            failed.append(
+                {
+                    "account_id": account_id,
+                    "gologin_profile_id": profile_id,
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "ok": True,
+        "idle_seconds": int(idle_seconds),
+        "found_count": len(stale_accounts),
+        "deleted_count": len(deleted),
+        "failed_count": len(failed),
+        "deleted": deleted,
+        "failed": failed,
+    }
+def cleanup_stale_gologin_profiles(
+    *,
+    idle_seconds: int = GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
+) -> dict[str, Any]:
+    ensure_accounts_last_used_column()
+    stale_accounts = get_stale_accounts_with_profiles(idle_seconds)
+
+    deleted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for item in stale_accounts:
+        account_id = int(item["id"])
+        profile_id = str(item["gologin_profile_id"]).strip()
+
+        try:
+            delete_gologin_profile(profile_id)
+            clear_account_gologin_binding_by_account_id(account_id)
+            deleted.append(
+                {
+                    "account_id": account_id,
+                    "gologin_profile_id": profile_id,
+                    "gologin_profile_name": item.get("gologin_profile_name"),
+                    "last_used_at": item.get("last_used_at"),
+                }
+            )
+        except Exception as exc:
+            failed.append(
+                {
+                    "account_id": account_id,
+                    "gologin_profile_id": profile_id,
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "ok": True,
+        "idle_seconds": int(idle_seconds),
+        "found_count": len(stale_accounts),
+        "deleted_count": len(deleted),
+        "failed_count": len(failed),
+        "deleted": deleted,
+        "failed": failed,
     }

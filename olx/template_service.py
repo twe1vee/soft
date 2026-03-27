@@ -32,11 +32,9 @@ def _format_pt_price(raw_price) -> str:
         fallback = _normalize_multiline_text(str(raw_price))
         if not fallback:
             return ""
-        if "€" in fallback:
-            return fallback
-        return f"{fallback} €"
+        return fallback
 
-    return f"{value:.2f}".replace(".", ",") + " €"
+    return f"{value:.2f}".replace(".", ",")
 
 
 def render_template(template_text: str, ad_data: dict) -> str:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from db import (
     get_account_by_id,
     get_active_users,
@@ -9,9 +11,14 @@ from db import (
 from olx.account_runtime import close_idle_account_runtimes
 from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
-from olx.profile_manager_gologin import AccountRuntimeBlockedError
+from olx.profile_manager_gologin import (
+    AccountRuntimeBlockedError,
+    GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
+    cleanup_stale_gologin_profiles,
+)
 
 DIALOGS_POLL_INTERVAL_SECONDS = 60
+GOLOGIN_PROFILE_CLEANUP_INTERVAL_SECONDS = 900
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
 
 
@@ -24,6 +31,11 @@ async def run_dialogs_polling_for_user(
     print(f"[dialogs_jobs] start user_id={user_id} telegram_chat_id={telegram_chat_id}")
 
     accounts = get_user_accounts(user_id)
+    print(
+        f"[dialogs_jobs] loaded_account_ids user_id={user_id} "
+        f"ids={[a.get('id') for a in accounts]}"
+    )
+
     alive_accounts: list[dict] = []
     proxies_by_id: dict[int, dict] = {}
 
@@ -41,6 +53,12 @@ async def run_dialogs_polling_for_user(
             continue
 
         alive_accounts.append(fresh_account)
+        print(
+            f"[dialogs_jobs] alive_account user_id={user_id} "
+            f"account_id={fresh_account.get('id')} "
+            f"proxy_id={fresh_account.get('proxy_id')} "
+            f"status={fresh_account.get('status')}"
+        )
 
         proxy_id = fresh_account.get("proxy_id")
         if proxy_id and proxy_id not in proxies_by_id:
@@ -133,6 +151,7 @@ async def run_dialogs_polling_iteration(application) -> None:
 
 
 async def _dialogs_poll_job_callback(context) -> None:
+    started = time.perf_counter()
     print("[dialogs_jobs] poll_job_tick")
     try:
         await run_dialogs_polling_iteration(context.application)
@@ -140,6 +159,9 @@ async def _dialogs_poll_job_callback(context) -> None:
         print(f"[dialogs_jobs] poll job runtime blocked: {exc}")
     except Exception as exc:
         print(f"[dialogs_jobs] poll job failed: {exc}")
+    finally:
+        took = int((time.perf_counter() - started) * 1000)
+        print(f"[dialogs_jobs] poll_job_done took_ms={took}")
 
 
 async def _runtime_cleanup_job_callback(context) -> None:
@@ -148,6 +170,20 @@ async def _runtime_cleanup_job_callback(context) -> None:
         print(f"[account_runtime] closed idle runtimes: {closed}")
     else:
         print("[account_runtime] cleanup tick no idle runtimes")
+
+
+async def _gologin_profile_cleanup_job_callback(context) -> None:
+    try:
+        result = cleanup_stale_gologin_profiles(
+            idle_seconds=GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
+        )
+        print(
+            f"[gologin_cleanup] found={result.get('found_count', 0)} "
+            f"deleted={result.get('deleted_count', 0)} "
+            f"failed={result.get('failed_count', 0)}"
+        )
+    except Exception as exc:
+        print(f"[gologin_cleanup] failed error={exc}")
 
 
 def start_dialogs_jobs(application) -> None:
@@ -160,6 +196,11 @@ def start_dialogs_jobs(application) -> None:
         interval=DIALOGS_POLL_INTERVAL_SECONDS,
         first=15,
         name="dialogs_poll_job",
+        job_kwargs={
+            "max_instances": 1,
+            "coalesce": True,
+            "misfire_grace_time": 120,
+        },
     )
     print(
         f"[dialogs_jobs] dialogs_poll_job added "
@@ -175,4 +216,15 @@ def start_dialogs_jobs(application) -> None:
     print(
         f"[dialogs_jobs] account_runtime_cleanup_job added "
         f"interval={RUNTIME_CLEANUP_INTERVAL_SECONDS} first=60"
+    )
+
+    application.job_queue.run_repeating(
+        _gologin_profile_cleanup_job_callback,
+        interval=GOLOGIN_PROFILE_CLEANUP_INTERVAL_SECONDS,
+        first=300,
+        name="gologin_profile_cleanup_job",
+    )
+    print(
+        f"[dialogs_jobs] gologin_profile_cleanup_job added "
+        f"interval={GOLOGIN_PROFILE_CLEANUP_INTERVAL_SECONDS} first=300"
     )
