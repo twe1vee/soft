@@ -18,13 +18,10 @@ from db import (
     create_message,
     get_user_accounts,
     get_account_by_id,
-    get_proxy_by_id,
-    update_proxy_status,
-    update_proxy_last_check,
 )
+from jobs.send_jobs import ensure_send_jobs_started
 from olx.draft import generate_draft
 from olx.parser import parse_olx_ad
-from olx.message_sender import send_message_to_ad
 from telegram_ui.handlers.common import build_ad_caption, get_current_user
 from telegram_ui.menu import build_action_keyboard, build_back_to_menu_keyboard
 
@@ -59,50 +56,28 @@ def build_account_select_keyboard(
         status = account.get("status", "unknown")
         proxy_id = account.get("proxy_id")
         account_id = account["id"]
+
         proxy_suffix = f" | proxy:{proxy_id}" if proxy_id else " | без proxy"
 
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{account_id}. {profile_name} [{status}]{proxy_suffix}",
-                callback_data=f"approve_account:{ad_row_id}:{pending_action_id}:{account_id}",
-            )
-        ])
-
-    keyboard.append([
-        InlineKeyboardButton(
-            "⬅️ Назад",
-            callback_data=f"back_to_actions:{ad_row_id}:{pending_action_id}",
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{account_id}. {profile_name} [{status}]{proxy_suffix}",
+                    callback_data=f"approve_account:{ad_row_id}:{pending_action_id}:{account_id}",
+                )
+            ]
         )
-    ])
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data=f"back_to_actions:{ad_row_id}:{pending_action_id}",
+            )
+        ]
+    )
 
     return InlineKeyboardMarkup(keyboard)
-
-
-def build_send_result_text(ad: dict, account: dict, proxy: dict, result: dict) -> str:
-    profile_name = account.get("olx_profile_name") or "без имени"
-    proxy_id = proxy.get("id")
-    status = result.get("status") or "unknown"
-    final_url = result.get("final_url") or ad.get("url") or "—"
-    error = result.get("error")
-
-    lines = [
-        build_ad_caption(ad),
-        "",
-        "📤 Результат отправки",
-        f"Аккаунт ID: {account['id']}",
-        f"Имя профиля: {profile_name}",
-        f"Proxy ID: {proxy_id}",
-        f"Статус отправки: {status}",
-        f"Final URL: {final_url}",
-    ]
-
-    if error:
-        lines.append(f"Ошибка: {error}")
-
-    if result.get("ok") or result.get("sent") or status == "sent":
-        lines.append("✅ Сообщение реально отправлено продавцу")
-
-    return "\n".join(lines)
 
 
 async def safe_edit_message_text(
@@ -206,7 +181,6 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         ad_data["status"] = "draft_ready"
         ad_data["draft_text"] = generate_draft(user_id, ad_data)
-
         ad_row_id = save_ad(user_id, ad_data)
 
         create_message(
@@ -221,7 +195,6 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             action_type="review_draft",
             payload_text=ad_data["draft_text"],
         )
-
         keyboard = build_action_keyboard(ad_row_id, action_id)
         saved_ad = get_ad_by_id(user_id, ad_row_id)
 
@@ -273,7 +246,6 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
 
     update_ad_draft(user_id, editing_ad_id, new_text, new_status="draft_ready")
     update_pending_action_status(editing_action_id, "pending")
-
     ad = get_ad_by_id(user_id, editing_ad_id)
 
     create_message(
@@ -287,7 +259,6 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data.pop("editing_action_id", None)
 
     keyboard = build_action_keyboard(editing_ad_id, editing_action_id)
-
     await update.message.reply_text(
         "✏️ Черновик обновлен.\n\n" + build_ad_caption(ad),
         reply_markup=keyboard,
@@ -298,9 +269,9 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
     current_user = get_current_user(update)
     context.user_data["current_user"] = current_user
     user_id = current_user["id"]
+
     query = update.callback_query
     parts = data.split(":")
-
     if not parts:
         await query.edit_message_reply_markup(reply_markup=None)
         return
@@ -469,20 +440,8 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             return
 
-        proxy = get_proxy_by_id(user_id, proxy_id)
-        if not proxy:
-            update_ad_status(user_id, ad_row_id, "send_blocked_proxy_not_found")
-            await safe_edit_message_text(
-                query,
-                context,
-                update.effective_chat.id,
-                build_ad_caption(ad) + "\n\n❌ Привязанный к аккаунту proxy не найден.",
-            )
-            return
-
-        proxy_text = proxy.get("proxy_text")
-        ad_url = ad.get("url")
-        draft_text = ad.get("draft_text") or ""
+        ad_url = (ad.get("url") or "").strip()
+        draft_text = (ad.get("draft_text") or "").strip()
 
         if not ad_url:
             update_ad_status(user_id, ad_row_id, "send_blocked_missing_url")
@@ -494,7 +453,7 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             return
 
-        if not draft_text.strip():
+        if not draft_text:
             update_ad_status(user_id, ad_row_id, "send_blocked_empty_draft")
             await safe_edit_message_text(
                 query,
@@ -504,70 +463,31 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             return
 
-        await safe_edit_message_text(
-            query,
-            context,
-            update.effective_chat.id,
-            build_ad_caption(ad) + "\n\n⏳ Отправляю сообщение через реальный браузер...\n"
-            + f"Аккаунт ID: {account['id']}\n"
-            + f"Proxy ID: {proxy['id']}",
-        )
+        manager = await ensure_send_jobs_started(context.application)
 
-        print(
-            f"[approve_send] user_id={user_id} "
-            f"ad_row_id={ad_row_id} "
-            f"pending_action_id={pending_action_id} "
-            f"account_id={account_id} "
-            f"proxy_id={proxy_id} "
-            f"ad_url={ad_url}"
-        )
+        update_ad_status(user_id, ad_row_id, "send_queued")
+        update_pending_action_status(pending_action_id, "queued")
 
-        result = await send_message_to_ad(
-            cookies_json=cookies_json,
-            proxy_text=proxy_text,
-            ad_url=ad_url,
-            message_text=draft_text,
-            headless=True,
+        job = await manager.enqueue(
             user_id=user_id,
+            ad_row_id=ad_row_id,
+            pending_action_id=pending_action_id,
             account_id=account_id,
-            olx_profile_name=account.get("olx_profile_name"),
+            proxy_id=proxy_id,
+            chat_id=update.effective_chat.id,
+            source_message_id=query.message.message_id if query and query.message else None,
         )
 
-        send_status = result.get("status") or "unknown_error"
-
-        update_proxy_last_check(user_id, proxy["id"])
-
-        if send_status == "sent":
-            update_proxy_status(user_id, proxy["id"], "working")
-            update_ad_status(user_id, ad_row_id, "sent")
-            update_pending_action_status(pending_action_id, "done")
-
-            create_message(
-                ad_db_id=ad_row_id,
-                direction="outgoing",
-                text=draft_text,
-                status="sent",
-            )
-        else:
-            if send_status == "proxy_failed":
-                update_proxy_status(user_id, proxy["id"], "failed")
-
-            update_ad_status(user_id, ad_row_id, f"send_failed:{send_status}")
-            update_pending_action_status(pending_action_id, "failed")
-
-            create_message(
-                ad_db_id=ad_row_id,
-                direction="outgoing",
-                text=draft_text,
-                status=f"send_failed:{send_status}",
-            )
-
-        updated_ad = get_ad_by_id(user_id, ad_row_id)
         await safe_edit_message_text(
             query,
             context,
             update.effective_chat.id,
-            build_send_result_text(updated_ad, account, proxy, result),
+            build_ad_caption(ad)
+            + "\n\n🧵 Задача поставлена в очередь на отправку."
+            + f"\nJob ID: {job.job_id}"
+            + f"\nАккаунт ID: {account_id}"
+            + f"\nProxy ID: {proxy_id}"
+            + f"\nВ очереди сейчас: {manager.get_queue_size()}",
         )
         return
 

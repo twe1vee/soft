@@ -53,7 +53,6 @@ async def send_message_to_ad(
     result["gologin_profile_id"] = None
     result["gologin_profile_name"] = None
     result["debugger_address"] = None
-
     result["message_button_clicked"] = False
     result["message_button_clicked_retry"] = False
     result["chat_button_retry_debug"] = None
@@ -82,6 +81,7 @@ async def send_message_to_ad(
 
     try:
         t_step = time.perf_counter()
+
         if not account_id or int(account_id) <= 0:
             result["status"] = "invalid_input"
             result["error"] = f"Некорректный account_id для send_message: {account_id}"
@@ -113,6 +113,7 @@ async def send_message_to_ad(
             pass
 
         result["final_url"] = page.url
+
         try:
             result["page_title"] = await page.title()
         except Exception:
@@ -166,50 +167,47 @@ async def send_message_to_ad(
 
             if clicked:
                 await wait_for_chat_mount(page)
-
-            input_locator = await find_message_input(page)
-
-            if input_locator is None and clicked:
-                await page.wait_for_timeout(350)
-
-                clicked_retry, click_debug_retry = await click_chat_button(page)
-                result["message_button_clicked_retry"] = clicked_retry
-                result["chat_button_retry_debug"] = click_debug_retry
-
-                visible_after_retry, text_after_retry = await get_chat_button_debug(page)
-                result["chat_button_still_visible_after_retry"] = visible_after_retry
-                result["chat_button_text_after_retry"] = text_after_retry
-
-                if clicked_retry:
-                    await wait_for_chat_mount(page)
-
                 input_locator = await find_message_input(page)
 
-            result.update(await collect_chat_diagnostics(page))
-            result["debug_login_hint_found"] = await has_login_hint(page)
-            result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
+        if input_locator is None and clicked:
+            await page.wait_for_timeout(350)
+            clicked_retry, click_debug_retry = await click_chat_button(page)
+            result["message_button_clicked_retry"] = clicked_retry
+            result["chat_button_retry_debug"] = click_debug_retry
 
-            if input_locator is None:
-                result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+            visible_after_retry, text_after_retry = await get_chat_button_debug(page)
+            result["chat_button_still_visible_after_retry"] = visible_after_retry
+            result["chat_button_text_after_retry"] = text_after_retry
 
-                if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
-                    result["status"] = "login_required_or_chat_blocked"
-                    result["error"] = (
-                        "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода"
-                    )
-                    result["timings_ms"]["total"] = _elapsed_ms(t_total)
-                    await save_debug_artifacts(
-                        page,
-                        result,
-                        prefix="login_required_or_chat_blocked",
-                    )
-                    return result
+            if clicked_retry:
+                await wait_for_chat_mount(page)
+                input_locator = await find_message_input(page)
 
-                result["status"] = "message_input_not_found"
-                result["error"] = "Не найдено поле ввода сообщения после клика по chat-button"
+        result.update(await collect_chat_diagnostics(page))
+        result["debug_login_hint_found"] = await has_login_hint(page)
+        result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
+
+        if input_locator is None:
+            result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+
+            if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
+                result["status"] = "login_required_or_chat_blocked"
+                result["error"] = (
+                    "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода"
+                )
                 result["timings_ms"]["total"] = _elapsed_ms(t_total)
-                await save_debug_artifacts(page, result, prefix="message_input_not_found")
+                await save_debug_artifacts(
+                    page,
+                    result,
+                    prefix="login_required_or_chat_blocked",
+                )
                 return result
+
+            result["status"] = "message_input_not_found"
+            result["error"] = "Не найдено поле ввода сообщения после клика по chat-button"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_input_not_found")
+            return result
 
         result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
         result["input_found"] = True
@@ -252,8 +250,9 @@ async def send_message_to_ad(
         if not send_clicked:
             t_step = time.perf_counter()
             result.update(await collect_chat_diagnostics(page))
-            result["timings_ms"]["collect_chat_diagnostics_send_button_not_found"] = _elapsed_ms(t_step)
-
+            result["timings_ms"]["collect_chat_diagnostics_send_button_not_found"] = _elapsed_ms(
+                t_step
+            )
             result["status"] = "send_button_not_found"
             result["error"] = "Не найдена кнопка отправки сообщения"
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
@@ -265,7 +264,6 @@ async def send_message_to_ad(
         t_step = time.perf_counter()
         verification = await verify_message_sent(page, input_locator, message_text)
         result["timings_ms"]["verify_message_sent"] = _elapsed_ms(t_step)
-
         result.update(verification)
         result["final_url"] = page.url
 

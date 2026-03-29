@@ -17,9 +17,25 @@ from olx.profile_manager_gologin import (
     cleanup_stale_gologin_profiles,
 )
 
-DIALOGS_POLL_INTERVAL_SECONDS = 60
+DIALOGS_POLL_INTERVAL_SECONDS = 120
 GOLOGIN_PROFILE_CLEANUP_INTERVAL_SECONDS = 900
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
+
+ALIVE_ACCOUNT_STATUSES = {"new", "connected", "checked", "working"}
+
+
+def is_account_alive_for_dialogs(account: dict) -> bool:
+    status = (account.get("status") or "").strip().lower()
+    if status not in ALIVE_ACCOUNT_STATUSES:
+        return False
+
+    if not account.get("proxy_id"):
+        return False
+
+    if not account.get("cookies_json"):
+        return False
+
+    return True
 
 
 async def run_dialogs_polling_for_user(
@@ -52,6 +68,32 @@ async def run_dialogs_polling_for_user(
             print(f"[dialogs_jobs] skip deleted account_id={account_id}")
             continue
 
+        if not is_account_alive_for_dialogs(fresh_account):
+            print(
+                f"[dialogs_jobs] skip_account user_id={user_id} "
+                f"account_id={fresh_account.get('id')} "
+                f"proxy_id={fresh_account.get('proxy_id')} "
+                f"status={fresh_account.get('status')} "
+                f"has_cookies={bool(fresh_account.get('cookies_json'))}"
+            )
+            continue
+
+        proxy_id = fresh_account.get("proxy_id")
+        proxy = get_proxy_by_id(user_id, proxy_id) if proxy_id else None
+        if not proxy:
+            print(
+                f"[dialogs_jobs] skip_account_missing_proxy "
+                f"user_id={user_id} account_id={fresh_account.get('id')} proxy_id={proxy_id}"
+            )
+            continue
+
+        if not proxy.get("proxy_text"):
+            print(
+                f"[dialogs_jobs] skip_account_empty_proxy_text "
+                f"user_id={user_id} account_id={fresh_account.get('id')} proxy_id={proxy_id}"
+            )
+            continue
+
         alive_accounts.append(fresh_account)
         print(
             f"[dialogs_jobs] alive_account user_id={user_id} "
@@ -60,19 +102,25 @@ async def run_dialogs_polling_for_user(
             f"status={fresh_account.get('status')}"
         )
 
-        proxy_id = fresh_account.get("proxy_id")
-        if proxy_id and proxy_id not in proxies_by_id:
-            proxy = get_proxy_by_id(user_id, proxy_id)
-            if proxy:
-                proxies_by_id[proxy_id] = proxy
-                print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
-            else:
-                print(f"[dialogs_jobs] proxy missing account_id={account_id} proxy_id={proxy_id}")
+        if proxy_id not in proxies_by_id:
+            proxies_by_id[proxy_id] = proxy
+            print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
 
     print(
         f"[dialogs_jobs] polling user_id={user_id} "
         f"alive_accounts={len(alive_accounts)} proxies={len(proxies_by_id)}"
     )
+
+    if not alive_accounts:
+        print(f"[dialogs_jobs] no alive accounts user_id={user_id}")
+        return {
+            "accounts_checked": 0,
+            "accounts_skipped": len(accounts),
+            "total_new_incoming_count": 0,
+            "new_incoming_events": [],
+            "account_results": [],
+            "sent_notifications": 0,
+        }
 
     result = await check_user_dialogs(
         user_id=user_id,

@@ -2,7 +2,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import BotCommand, MenuButtonCommands, Update
+from telegram import BotCommand, MenuButtonCommands
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
 )
 
+from jobs.send_jobs import ensure_send_jobs_started, get_send_jobs_manager
 from olx.dialogs_jobs import start_dialogs_jobs
 from telegram_ui.handlers import (
     button_handler,
@@ -28,10 +29,21 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
+def env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+SEND_WORKERS = env_int("SEND_WORKERS", 2)
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
@@ -52,13 +64,26 @@ async def post_init(application: Application):
         ]
     )
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    await ensure_send_jobs_started(application, worker_count=SEND_WORKERS)
+
+
+async def post_shutdown(application: Application):
+    manager = get_send_jobs_manager(application)
+    if manager is not None:
+        await manager.stop()
 
 
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     app.add_error_handler(error_handler)
 
