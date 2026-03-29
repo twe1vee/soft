@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from db import (
@@ -16,6 +17,10 @@ from olx.dialogs_parser import (
 )
 from olx.message_sender_page import has_login_hint, is_cloudfront_block_page
 from olx.profile_manager_gologin import AccountRuntimeBlockedError
+
+
+DIALOGS_OPEN_TIMEOUT_SECONDS = 45
+DIALOGS_PARSE_TIMEOUT_SECONDS = 30
 
 
 def _normalize_text(value: str | None) -> str:
@@ -74,12 +79,20 @@ async def check_account_dialogs(
     if not fresh_account:
         result["status"] = "skipped_deleted_account"
         result["error"] = f"account_id={account_id} already deleted"
+        print(
+            f"[dialogs_checker] skipped_deleted_account "
+            f"user_id={user_id} account_id={account_id}"
+        )
         return result
 
     page = None
     runtime_entry = None
 
     try:
+        print(
+            f"[dialogs_checker] open_runtime_start "
+            f"user_id={user_id} account_id={account_id}"
+        )
         page, runtime_entry = await open_account_runtime_page(
             user_id=user_id,
             account_id=account_id,
@@ -92,9 +105,26 @@ async def check_account_dialogs(
             wait_after_ms=0,
             busy_reason="dialogs_check",
         )
+        print(
+            f"[dialogs_checker] open_runtime_ok "
+            f"user_id={user_id} account_id={account_id} "
+            f"url={getattr(page, 'url', None)}"
+        )
     except AccountRuntimeBlockedError as exc:
         result["status"] = "skipped_runtime_blocked"
         result["error"] = str(exc)
+        print(
+            f"[dialogs_checker] skipped_runtime_blocked "
+            f"user_id={user_id} account_id={account_id} error={exc!r}"
+        )
+        return result
+    except Exception as exc:
+        result["status"] = "failed_open_runtime"
+        result["error"] = str(exc)
+        print(
+            f"[dialogs_checker] failed_open_runtime "
+            f"user_id={user_id} account_id={account_id} error={exc!r}"
+        )
         return result
 
     try:
@@ -106,32 +136,100 @@ async def check_account_dialogs(
         try:
             await page.set_viewport_size({"width": 1440, "height": 1100})
             await page.wait_for_timeout(600)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"[dialogs_checker] viewport_warning "
+                f"user_id={user_id} account_id={account_id} error={exc!r}"
+            )
 
-        page_info = await open_dialogs_page(
-            page,
-            timeout=90000,
-            wait_after_ms=4000,
+        print(
+            f"[dialogs_checker] before_open_dialogs "
+            f"user_id={user_id} account_id={account_id} current_url={page.url}"
         )
-        result.update(page_info)
-        result["final_url"] = page.url
+
+        try:
+            page_info = await asyncio.wait_for(
+                open_dialogs_page(
+                    page,
+                    timeout=45000,
+                    wait_after_ms=2500,
+                ),
+                timeout=DIALOGS_OPEN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result["status"] = "dialogs_open_timeout"
+            result["final_url"] = getattr(page, "url", None)
+            result["error"] = (
+                f"open_dialogs_page timeout after {DIALOGS_OPEN_TIMEOUT_SECONDS}s"
+            )
+            print(
+                f"[dialogs_checker] dialogs_open_timeout "
+                f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+            )
+            return result
+
+        result.update(page_info or {})
+        result["final_url"] = getattr(page, "url", None)
+
+        try:
+            result["page_title"] = await page.title()
+        except Exception:
+            result["page_title"] = None
+
+        print(
+            f"[dialogs_checker] after_open_dialogs "
+            f"user_id={user_id} account_id={account_id} "
+            f"final_url={result['final_url']} page_info={page_info}"
+        )
 
         if await is_cloudfront_block_page(page):
             result["status"] = "cloudfront_blocked"
             result["cloudfront_blocked"] = True
             result["error"] = "OLX/CloudFront вернул block page при открытии диалогов"
+            print(
+                f"[dialogs_checker] cloudfront_blocked "
+                f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+            )
             return result
 
         if await has_login_hint(page):
             result["status"] = "not_logged_in"
             result["login_hint_found"] = True
             result["error"] = "OLX показывает логин вместо списка диалогов"
+            print(
+                f"[dialogs_checker] not_logged_in "
+                f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+            )
             return result
 
-        parsed_dialogs = await parse_dialogs_page(page)
+        print(
+            f"[dialogs_checker] before_parse_dialogs "
+            f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+        )
+
+        try:
+            parsed_dialogs = await asyncio.wait_for(
+                parse_dialogs_page(page),
+                timeout=DIALOGS_PARSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result["status"] = "dialogs_parse_timeout"
+            result["error"] = (
+                f"parse_dialogs_page timeout after {DIALOGS_PARSE_TIMEOUT_SECONDS}s"
+            )
+            print(
+                f"[dialogs_checker] dialogs_parse_timeout "
+                f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+            )
+            return result
+
         result["parsed_dialogs_count"] = len(parsed_dialogs)
         result["parsed_dialogs"] = parsed_dialogs
+
+        print(
+            f"[dialogs_checker] after_parse_dialogs "
+            f"user_id={user_id} account_id={account_id} parsed={len(parsed_dialogs)}"
+        )
 
         conversations_upserted = 0
         new_incoming_events: list[dict[str, Any]] = []
@@ -211,14 +309,32 @@ async def check_account_dialogs(
         result["new_incoming_count"] = len(new_incoming_events)
         result["ok"] = True
         result["status"] = "ok"
+
+        print(
+            f"[dialogs_checker] done "
+            f"user_id={user_id} account_id={account_id} "
+            f"parsed={result['parsed_dialogs_count']} "
+            f"upserted={result['conversations_upserted']} "
+            f"new_incoming={result['new_incoming_count']}"
+        )
         return result
 
     except Exception as exc:
         result["status"] = "failed"
+        result["final_url"] = getattr(page, "url", None) if page is not None else None
         result["error"] = str(exc)
+        print(
+            f"[dialogs_checker] failed "
+            f"user_id={user_id} account_id={account_id} "
+            f"final_url={result['final_url']} error={exc!r}"
+        )
         return result
     finally:
         if runtime_entry is not None:
+            print(
+                f"[dialogs_checker] close_runtime "
+                f"user_id={user_id} account_id={account_id}"
+            )
             await close_runtime_page(runtime_entry, page)
 
 
@@ -245,12 +361,16 @@ async def check_user_dialogs(
         fresh_account = get_account_by_id(user_id, account_id)
         if not fresh_account:
             summary["accounts_skipped"] += 1
-            summary["account_results"].append(
-                {
-                    "ok": False,
-                    "status": "skipped_deleted_account",
-                    "account_id": account_id,
-                }
+            skipped = {
+                "ok": False,
+                "status": "skipped_deleted_account",
+                "account_id": account_id,
+            }
+            summary["account_results"].append(skipped)
+            print(
+                f"[dialogs_checker] account_summary "
+                f"user_id={user_id} account_id={account_id} "
+                f"status={skipped['status']}"
             )
             continue
 
@@ -261,12 +381,16 @@ async def check_user_dialogs(
 
         if not cookies_json or not proxy_text:
             summary["accounts_skipped"] += 1
-            summary["account_results"].append(
-                {
-                    "ok": False,
-                    "status": "skipped_missing_credentials",
-                    "account_id": account_id,
-                }
+            skipped = {
+                "ok": False,
+                "status": "skipped_missing_credentials",
+                "account_id": account_id,
+            }
+            summary["account_results"].append(skipped)
+            print(
+                f"[dialogs_checker] account_summary "
+                f"user_id={user_id} account_id={account_id} "
+                f"status={skipped['status']}"
             )
             continue
 
@@ -282,5 +406,15 @@ async def check_user_dialogs(
         summary["account_results"].append(account_result)
         summary["total_new_incoming_count"] += account_result.get("new_incoming_count", 0)
         summary["new_incoming_events"].extend(account_result.get("new_incoming_events", []))
+
+        print(
+            f"[dialogs_checker] account_summary "
+            f"user_id={user_id} account_id={account_id} "
+            f"status={account_result.get('status')} "
+            f"parsed={account_result.get('parsed_dialogs_count')} "
+            f"new_incoming={account_result.get('new_incoming_count')} "
+            f"final_url={account_result.get('final_url')} "
+            f"error={account_result.get('error')}"
+        )
 
     return summary
