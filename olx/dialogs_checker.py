@@ -191,14 +191,30 @@ async def check_account_dialogs(
             return result
 
         if await has_login_hint(page):
-            result["status"] = "not_logged_in"
             result["login_hint_found"] = True
-            result["error"] = "OLX показывает логин вместо списка диалогов"
-            print(
-                f"[dialogs_checker] not_logged_in "
-                f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+
+            dialog_rows_found = int((page_info or {}).get("dialog_rows_found") or 0)
+            final_url = getattr(page, "url", "") or ""
+
+            is_on_dialogs_page = (
+                "/myaccount/answers" in final_url
+                or "/myaccount/answer/" in final_url
             )
-            return result
+
+            if dialog_rows_found <= 0 and not is_on_dialogs_page:
+                result["status"] = "not_logged_in"
+                result["error"] = "OLX показывает логин вместо списка диалогов"
+                print(
+                    f"[dialogs_checker] not_logged_in "
+                    f"user_id={user_id} account_id={account_id} final_url={result['final_url']}"
+                )
+                return result
+
+            print(
+                f"[dialogs_checker] login_hint_ignored "
+                f"user_id={user_id} account_id={account_id} "
+                f"final_url={final_url} dialog_rows_found={dialog_rows_found}"
+            )
 
         print(
             f"[dialogs_checker] before_parse_dialogs "
