@@ -1,5 +1,5 @@
 import re
-
+from telegram.constants import ParseMode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import ContextTypes
@@ -91,6 +91,8 @@ async def safe_edit_message_text(
         await query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
         return
     except BadRequest as exc:
@@ -105,6 +107,8 @@ async def safe_edit_message_text(
             chat_id=chat_id,
             text=text,
             reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
     except Exception:
         raise
@@ -478,16 +482,13 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             source_message_id=query.message.message_id if query and query.message else None,
         )
 
+        ad["status"] = "sending"
+
         await safe_edit_message_text(
             query,
             context,
             update.effective_chat.id,
-            build_ad_caption(ad)
-            + "\n\n🧵 Задача поставлена в очередь на отправку."
-            + f"\nJob ID: {job.job_id}"
-            + f"\nАккаунт ID: {account_id}"
-            + f"\nProxy ID: {proxy_id}"
-            + f"\nВ очереди сейчас: {manager.get_queue_size()}",
+            build_ad_caption(ad),
         )
         return
 

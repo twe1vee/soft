@@ -51,34 +51,16 @@ def _build_send_result_text(
     *,
     job_id: str,
 ) -> str:
-    ad_title = (ad or {}).get("title") or "без названия"
-    ad_url = (ad or {}).get("url") or result.get("ad_url") or "—"
-    profile_name = (account or {}).get("olx_profile_name") or "без имени"
-    account_id = (account or {}).get("id") or result.get("account_id") or "—"
-    proxy_id = (proxy or {}).get("id") or "—"
     status = result.get("status") or "unknown"
-    final_url = result.get("final_url") or ad_url
     error = result.get("error")
 
-    lines = [
-        "📤 Результат отправки",
-        f"Job ID: {job_id}",
-        f"Объявление: {ad_title}",
-        f"URL: {ad_url}",
-        f"Аккаунт ID: {account_id}",
-        f"Имя профиля: {profile_name}",
-        f"Proxy ID: {proxy_id}",
-        f"Статус отправки: {status}",
-        f"Final URL: {final_url or '—'}",
-    ]
+    if result.get("ok") or result.get("sent") or status == "sent":
+        return "📤 Доставлено"
 
     if error:
-        lines.append(f"Ошибка: {error}")
+        return f"📤 Ошибка\n{error}"
 
-    if result.get("ok") or result.get("sent") or status == "sent":
-        lines.append("✅ Сообщение реально отправлено")
-
-    return "\n".join(lines)
+    return f"📤 Ошибка\nСтатус: {status}"
 
 
 def _build_failure_result(

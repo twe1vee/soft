@@ -99,24 +99,21 @@ async def _extract_conversation_id(row) -> str | None:
 
 async def _is_outgoing_by_icon(row) -> bool:
     """
-    OLX в строке списка для исходящего последнего сообщения рисует SVG-иконку
-    с галочками рядом с preview текста.
-    Если такая иконка есть рядом с message-text, считаем последнее сообщение исходящим.
+    Считаем сообщение исходящим только если иконка галочек находится
+    максимально близко к preview последнего сообщения.
+
+    Не берем любые svg из широких ancestor-контейнеров строки, потому что
+    из-за этого unread-входящие тоже начинают считаться outgoing.
     """
     try:
         message_el = row.locator(MESSAGE_SELECTOR).first
         if await _safe_count(message_el) <= 0:
             return False
-
-        parent = message_el.locator("xpath=ancestor::*[1]").first
-        if await _safe_count(parent) > 0:
-            if await _safe_count(parent.locator("svg")) > 0:
-                return True
     except Exception:
-        pass
+        return False
 
+    # 1) Самый надежный кейс: svg среди прямых соседей preview
     try:
-        message_el = row.locator(MESSAGE_SELECTOR).first
         preceding_svg = message_el.locator('xpath=preceding-sibling::*[name()="svg"]')
         if await _safe_count(preceding_svg) > 0:
             return True
@@ -124,23 +121,47 @@ async def _is_outgoing_by_icon(row) -> bool:
         pass
 
     try:
+        following_svg = message_el.locator('xpath=following-sibling::*[name()="svg"]')
+        if await _safe_count(following_svg) > 0:
+            return True
+    except Exception:
+        pass
+
+    # 2) Иконка внутри ближайшего родителя preview, но только если там мало svg
+    # и они локальны для блока сообщения, а не для всей строки диалога.
+    try:
+        parent = message_el.locator("xpath=ancestor::*[1]").first
+        if await _safe_count(parent) > 0:
+            svg_count = await _safe_count(parent.locator("svg"))
+            if 0 < svg_count <= 2:
+                return True
+    except Exception:
+        pass
+
+    # 3) Очень узкий wrapper вокруг message-text
+    try:
         wrappers = row.locator(
             'xpath=.//*[contains(@data-testid,"list-item-message-text")]/ancestor::*[count(.//svg) > 0][1]'
         )
         if await _safe_count(wrappers) > 0:
-            return True
-    except Exception:
-        pass
+            wrapper = wrappers.first
+            svg_count = await _safe_count(wrapper.locator("svg"))
 
-    try:
-        message_wrap = row.locator(f'{MESSAGE_SELECTOR} >> xpath=ancestor::*[2]').first
-        if await _safe_count(message_wrap) > 0 and await _safe_count(message_wrap.locator("svg")) > 0:
-            return True
+            # Берем только маленький локальный контейнер, а не широкий блок строки
+            text_preview = await _safe_inner_text(message_el, timeout_ms=600)
+            wrapper_text = await _safe_inner_text(wrapper, timeout_ms=600)
+
+            if (
+                0 < svg_count <= 2
+                and wrapper_text
+                and text_preview
+                and len(wrapper_text) <= max(len(text_preview) + 40, 120)
+            ):
+                return True
     except Exception:
         pass
 
     return False
-
 
 async def _is_unread_by_section(row) -> bool:
     """

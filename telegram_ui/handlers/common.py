@@ -2,6 +2,7 @@ import re
 
 from telegram import Update
 from telegram.ext import ContextTypes
+from html import escape as html_escape
 
 from db import get_or_create_user, ensure_default_template
 from telegram_ui.menu import get_main_menu_inline_keyboard
@@ -112,21 +113,22 @@ def get_current_user(update: Update) -> dict:
 
 
 def build_ad_caption(ad_data: dict) -> str:
-    seller = _normalize_text(ad_data.get("seller_name")) or "не найден"
-    price = _format_caption_price(ad_data.get("price"))
-    ad_id = ad_data.get("ad_id") or "не найден"
-    status = _normalize_text(ad_data.get("status")) or "unknown"
-    draft_text = _normalize_text(ad_data.get("draft_text")) or ""
+    ad_id = ad_data.get("ad_id") or "—"
     url = _normalize_text(ad_data.get("url")) or "—"
+    status = _normalize_text(ad_data.get("status")) or ""
+
+    if status == "draft_ready":
+        status_text = "Готово к написанию. Отправить ?"
+    elif status in {"queued", "send_queued", "sending"}:
+        status_text = "Отправляем"
+    else:
+        status_text = "Готово"
 
     return (
-        "📦 Объявление\n\n"
-        f"🔗 {url}\n"
-        f"👤 Seller: {seller}\n"
-        f"💰 Price: {price}\n"
-        f"🆔 #{ad_id}\n"
-        f"📌 Status: {status}\n\n"
-        f"✉️ Draft:\n{draft_text}"
+        "📦 Объявление\n"
+        f"🆔 ID#{ad_id}\n\n\n"
+        f"📌 {status_text}\n\n"
+        f'🔗 <a href="{html_escape(url, quote=True)}">Ссылка на объявление</a>'
     )
 
 
