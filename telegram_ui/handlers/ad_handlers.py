@@ -177,6 +177,8 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.message.reply_text(
                 build_ad_caption(existing_ad) + eye_note,
                 reply_markup=build_action_keyboard(existing_ad["id"], pending_action_id),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
             )
             continue
 
@@ -212,6 +214,8 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(
             build_ad_caption(saved_ad) + extra_note,
             reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
 
 
@@ -266,6 +270,8 @@ async def handle_editing_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(
         "✏️ Черновик обновлен.\n\n" + build_ad_caption(ad),
         reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
 
