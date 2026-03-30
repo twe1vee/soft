@@ -18,7 +18,6 @@ from olx.dialogs_parser import (
 from olx.message_sender_page import has_login_hint, is_cloudfront_block_page
 from olx.profile_manager_gologin import AccountRuntimeBlockedError
 
-
 DIALOGS_OPEN_TIMEOUT_SECONDS = 45
 DIALOGS_PARSE_TIMEOUT_SECONDS = 30
 
@@ -36,7 +35,6 @@ def _is_incoming_candidate(item: dict[str, Any]) -> bool:
 
     if direction_guess == "incoming":
         return True
-
     if direction_guess == "outgoing":
         return False
 
@@ -236,20 +234,46 @@ async def check_account_dialogs(
 
         for item in parsed_dialogs:
             conversation_key = item["conversation_key"]
-
             existing_conversation = get_conversation_by_key(
                 user_id=user_id,
                 account_id=account_id,
                 conversation_key=conversation_key,
             )
 
+            is_incoming_candidate = _is_incoming_candidate(item)
+
+            print(
+                f"[dialogs_checker] dialog_candidate "
+                f"user_id={user_id} account_id={account_id} "
+                f"conversation_key={conversation_key!r} "
+                f"seller={item.get('seller_name')!r} "
+                f"ad_title={item.get('ad_title')!r} "
+                f"text={item.get('last_message_text')!r} "
+                f"updated_hint={item.get('updated_hint')!r} "
+                f"direction={item.get('last_message_direction_guess')!r} "
+                f"is_unread={bool(item.get('is_unread'))!r} "
+                f"incoming_candidate={is_incoming_candidate!r}"
+            )
+
             incoming_message_key = None
-            if _is_incoming_candidate(item):
+            if is_incoming_candidate:
                 incoming_message_key = build_incoming_message_key(
                     conversation_key=conversation_key,
                     seller_name=item.get("seller_name"),
                     last_message_text=item.get("last_message_text"),
                     updated_hint=item.get("updated_hint"),
+                )
+                print(
+                    f"[dialogs_checker] incoming_key_built "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"conversation_key={conversation_key!r} "
+                    f"incoming_message_key={incoming_message_key!r}"
+                )
+            else:
+                print(
+                    f"[dialogs_checker] incoming_skipped "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"conversation_key={conversation_key!r}"
                 )
 
             conversation_id = create_or_update_conversation(
@@ -283,8 +307,21 @@ async def check_account_dialogs(
                 sent_at_hint=item.get("updated_hint"),
                 status="new_incoming",
             )
+
             if message_id is None:
+                print(
+                    f"[dialogs_checker] message_duplicate "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"conversation_key={conversation_key!r}"
+                )
                 continue
+
+            print(
+                f"[dialogs_checker] new_incoming_created "
+                f"user_id={user_id} account_id={account_id} "
+                f"conversation_key={conversation_key!r} "
+                f"message_id={message_id!r}"
+            )
 
             new_incoming_events.append(
                 {
@@ -358,6 +395,7 @@ async def check_user_dialogs(
 
     for account in accounts:
         account_id = account["id"]
+
         fresh_account = get_account_by_id(user_id, account_id)
         if not fresh_account:
             summary["accounts_skipped"] += 1
@@ -402,6 +440,7 @@ async def check_user_dialogs(
             headless=headless,
             olx_profile_name=fresh_account.get("olx_profile_name"),
         )
+
         summary["accounts_checked"] += 1
         summary["account_results"].append(account_result)
         summary["total_new_incoming_count"] += account_result.get("new_incoming_count", 0)

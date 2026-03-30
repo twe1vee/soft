@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 LIST_ROW_SELECTORS = [
     '[data-testid^="conversations-list-item-"]',
     '[data-testid*="conversations-list-item"]',
+    'a[href*="/myaccount/answer/"]',
+    'a[href*="/myaccount/answers/"]',
 ]
 
 NAME_SELECTOR = '[data-testid="list-item-user-name"]'
@@ -67,6 +68,7 @@ async def _pick_rows(page):
         locator = page.locator(selector)
         count = await _safe_count(locator)
         print(f"[dialogs_parser] selector={selector} count={count}")
+
         if count > best_count:
             best_count = count
             best_locator = locator
@@ -78,12 +80,19 @@ async def _pick_rows(page):
 
 async def _extract_conversation_id(row) -> str | None:
     testid = _norm(await _safe_attr(row, "data-testid"))
-    if not testid:
-        return None
+    if testid:
+        m = re.search(r"conversations-list-item-([A-Za-z0-9\-]+)$", testid)
+        if m:
+            return m.group(1)
 
-    m = re.search(r"conversations-list-item-([A-Za-z0-9\-]+)$", testid)
-    if m:
-        return m.group(1)
+    href = _norm(await _safe_attr(row, "href"))
+    if not href:
+        href = _norm(await _safe_attr(row.locator("a").first, "href"))
+
+    if href:
+        m = re.search(r"/myaccount/answer[s]?/([A-Za-z0-9\-]+)/?", href)
+        if m:
+            return m.group(1)
 
     return None
 
@@ -91,8 +100,8 @@ async def _extract_conversation_id(row) -> str | None:
 async def _is_outgoing_by_icon(row) -> bool:
     """
     OLX в строке списка для исходящего последнего сообщения рисует SVG-иконку
-    с галочками рядом с preview текста. Если такая иконка есть рядом с message-text,
-    считаем последнее сообщение исходящим.
+    с галочками рядом с preview текста.
+    Если такая иконка есть рядом с message-text, считаем последнее сообщение исходящим.
     """
     try:
         message_el = row.locator(MESSAGE_SELECTOR).first
@@ -123,6 +132,13 @@ async def _is_outgoing_by_icon(row) -> bool:
     except Exception:
         pass
 
+    try:
+        message_wrap = row.locator(f'{MESSAGE_SELECTOR} >> xpath=ancestor::*[2]').first
+        if await _safe_count(message_wrap) > 0 and await _safe_count(message_wrap.locator("svg")) > 0:
+            return True
+    except Exception:
+        pass
+
     return False
 
 
@@ -147,7 +163,6 @@ async def _is_unread_by_section(row) -> bool:
         if unread_exists and read_exists:
             unread_text = (await _safe_inner_text(unread_title, timeout_ms=600)).lower()
             read_text = (await _safe_inner_text(read_title, timeout_ms=600)).lower()
-
             if unread_text and not read_text:
                 return True
     except Exception:
@@ -161,13 +176,6 @@ async def _is_unread_by_section(row) -> bool:
                 return True
             if "lidas" in section_text:
                 return False
-    except Exception:
-        pass
-
-    try:
-        page_chunk = (await _safe_inner_text(row, timeout_ms=1200)).lower()
-        if "não lidas" in page_chunk or "nao lidas" in page_chunk:
-            return True
     except Exception:
         pass
 
@@ -218,6 +226,7 @@ async def _parse_single_row(row) -> dict[str, Any] | None:
 
 async def parse_dialogs_page(page) -> list[dict[str, Any]]:
     locator, selector, count = await _pick_rows(page)
+
     if locator is None or count <= 0:
         print("[dialogs_parser] rows_found=0")
         return []
