@@ -27,6 +27,22 @@ MESSAGE_SURFACE_SELECTORS = [
     '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
 ]
 
+FAILED_MESSAGE_HINTS = [
+    "Não podes enviar esta mensagem",
+    "Clica para tentar de novo",
+    "Tenta de novo",
+    "Não foi possível enviar",
+    "Mensagem não enviada",
+]
+
+FAILED_MESSAGE_SELECTORS = [
+    'text=Não podes enviar esta mensagem',
+    'text=Clica para tentar de novo',
+    'text=Tenta de novo',
+    'text=Não foi possível enviar',
+    'text=Mensagem não enviada',
+]
+
 
 async def fill_message_input(locator, message_text: str) -> None:
     tag_name = await locator.evaluate("(el) => el.tagName.toLowerCase()")
@@ -230,6 +246,39 @@ async def read_input_value(locator) -> str:
     return ""
 
 
+async def detect_failed_message_state(page) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "failed_message_detected": False,
+        "failed_message_reason": None,
+    }
+
+    for selector in FAILED_MESSAGE_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if await locator.is_visible():
+                data["failed_message_detected"] = True
+                data["failed_message_reason"] = selector.replace("text=", "")
+                return data
+        except Exception:
+            continue
+
+    try:
+        body_text = await page_body_text(page)
+        body_text_lower = (body_text or "").lower()
+
+        for hint in FAILED_MESSAGE_HINTS:
+            if hint.lower() in body_text_lower:
+                data["failed_message_detected"] = True
+                data["failed_message_reason"] = hint
+                return data
+    except Exception:
+        pass
+
+    return data
+
+
 async def verify_message_sent(page, input_locator, message_text: str) -> dict[str, Any]:
     target_text = normalize_text(message_text)
 
@@ -240,9 +289,13 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         "post_send_body_has_text": False,
         "post_send_url": None,
         "delivery_verified": False,
+        "delivery_failed": False,
+        "delivery_failed_reason": None,
         "post_send_exact_message_match_count": 0,
         "post_send_sent_status_found": False,
         "post_send_sent_message_found": False,
+        "failed_message_detected": False,
+        "failed_message_reason": None,
     }
 
     for _ in range(10):
@@ -272,6 +325,20 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
             )
         except Exception:
             verification["post_send_body_has_text"] = False
+
+        try:
+            failed_info = await detect_failed_message_state(page)
+            verification["failed_message_detected"] = failed_info["failed_message_detected"]
+            verification["failed_message_reason"] = failed_info["failed_message_reason"]
+        except Exception:
+            verification["failed_message_detected"] = False
+            verification["failed_message_reason"] = None
+
+        if verification["failed_message_detected"]:
+            verification["delivery_verified"] = False
+            verification["delivery_failed"] = True
+            verification["delivery_failed_reason"] = verification["failed_message_reason"]
+            return verification
 
         try:
             sent_status = page.locator(
@@ -349,22 +416,15 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         if (
             verification["post_send_sent_message_found"]
             and verification["post_send_input_empty"]
+            and not verification["failed_message_detected"]
         ):
             verification["delivery_verified"] = True
             return verification
 
-        if verification["post_send_message_visible"] and verification["post_send_input_empty"]:
-            verification["delivery_verified"] = True
-            return verification
-
-        if verification["post_send_input_empty"] and verification["post_send_chat_root_found"]:
-            verification["delivery_verified"] = True
-            return verification
-
         if (
-            verification["post_send_body_has_text"]
-            and verification["post_send_chat_root_found"]
+            verification["post_send_message_visible"]
             and verification["post_send_input_empty"]
+            and not verification["failed_message_detected"]
         ):
             verification["delivery_verified"] = True
             return verification

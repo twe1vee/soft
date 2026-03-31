@@ -327,6 +327,14 @@ async def send_message_to_ad(
             await save_debug_artifacts(page, result, prefix="sent_success")
             return result
 
+        if verification.get("delivery_failed"):
+            reason = verification.get("delivery_failed_reason") or "OLX показал, что сообщение не доставлено"
+            result["status"] = "message_delivery_failed"
+            result["error"] = reason
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_delivery_failed")
+            return result
+
         if result.get("daily_limit_reached"):
             result["status"] = "daily_limit_reached"
             result["error"] = "OLX показал лимит на новые диалоги за день"
