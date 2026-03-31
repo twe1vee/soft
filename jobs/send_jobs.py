@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,6 +14,8 @@ from db import (
     get_account_by_id,
     get_ad_by_id,
     get_proxy_by_id,
+    update_account_last_check,
+    update_account_status,
     update_ad_status,
     update_pending_action_status,
     update_proxy_last_check,
@@ -21,6 +24,25 @@ from db import (
 from olx.message_sender import send_message_to_ad
 
 BOT_DATA_KEY = "send_jobs_manager"
+SEND_JITTER_MIN_SECONDS = 8
+SEND_JITTER_MAX_SECONDS = 18
+
+TRANSIENT_SEND_STATUSES = {
+    "message_input_not_found",
+    "send_button_not_found",
+    "send_clicked_unverified",
+    "timeout",
+}
+
+DEAD_SEND_STATUSES = {
+    "cloudfront_blocked",
+    "login_required_or_chat_blocked",
+    "browser_failed",
+}
+
+WRITE_LIMITED_SEND_STATUSES = {
+    "daily_limit_reached",
+}
 
 
 @dataclass(slots=True)
@@ -53,12 +75,29 @@ def _build_send_result_text(
 ) -> str:
     status = result.get("status") or "unknown"
     error = result.get("error")
+    account_status = result.get("account_status")
+
+    account_status_map = {
+        "working": "живой",
+        "loading_retry": "не прогрузился, был повтор",
+        "write_limited": "лимит на новые сообщения",
+        "dead": "мёртвый",
+    }
+
+    account_status_text = account_status_map.get(account_status, account_status)
 
     if result.get("ok") or result.get("sent") or status == "sent":
+        if account_status_text:
+            return f"📤 Доставлено\nСтатус аккаунта: {account_status_text}"
         return "📤 Доставлено"
 
     if error:
+        if account_status_text:
+            return f"📤 Ошибка\n{error}\nСтатус аккаунта: {account_status_text}"
         return f"📤 Ошибка\n{error}"
+
+    if account_status_text:
+        return f"📤 Ошибка\nСтатус: {status}\nСтатус аккаунта: {account_status_text}"
 
     return f"📤 Ошибка\nСтатус: {status}"
 
@@ -82,6 +121,26 @@ def _build_failure_result(
         "final_url": (ad or {}).get("url"),
     }
 
+
+def _map_send_status_to_account_status(send_status: str, *, retry_used: bool) -> str | None:
+    if send_status == "sent":
+        return "working"
+
+    if send_status in WRITE_LIMITED_SEND_STATUSES:
+        return "write_limited"
+
+    if send_status in TRANSIENT_SEND_STATUSES:
+        return "dead" if retry_used else "loading_retry"
+
+    if send_status in DEAD_SEND_STATUSES:
+        return "dead"
+
+    return None
+
+async def _sleep_before_send(account_id: int) -> None:
+    delay = random.uniform(SEND_JITTER_MIN_SECONDS, SEND_JITTER_MAX_SECONDS)
+    print(f"[send_jobs] pre_send_delay account_id={account_id} sleep={delay:.2f}s")
+    await asyncio.sleep(delay)
 
 class SendJobsManager:
     def __init__(self, application: Application, worker_count: int = 2):
@@ -308,6 +367,9 @@ class SendJobsManager:
 
             update_ad_status(job.user_id, job.ad_row_id, "sending")
             update_pending_action_status(job.pending_action_id, "running")
+            update_account_last_check(job.user_id, job.account_id)
+
+            await _sleep_before_send(job.account_id)
 
             result = await send_message_to_ad(
                 cookies_json=cookies_json,
@@ -321,7 +383,37 @@ class SendJobsManager:
             )
 
             send_status = result.get("status") or "unknown_error"
+            retry_used = False
+
+            if send_status in TRANSIENT_SEND_STATUSES:
+                update_account_status(job.user_id, job.account_id, "loading_retry")
+                await asyncio.sleep(random.uniform(2.5, 5.5))
+
+                retry_used = True
+                retry_result = await send_message_to_ad(
+                    cookies_json=cookies_json,
+                    proxy_text=proxy["proxy_text"],
+                    ad_url=ad_url,
+                    message_text=draft_text,
+                    headless=True,
+                    user_id=job.user_id,
+                    account_id=job.account_id,
+                    olx_profile_name=account.get("olx_profile_name"),
+                )
+
+                retry_status = retry_result.get("status") or "unknown_error"
+                retry_result["first_try_status"] = send_status
+                retry_result["retry_used"] = True
+
+                result = retry_result
+                send_status = retry_status
+
             update_proxy_last_check(job.user_id, proxy["id"])
+
+            account_status = _map_send_status_to_account_status(send_status, retry_used=retry_used)
+            if account_status:
+                update_account_status(job.user_id, job.account_id, account_status)
+                result["account_status"] = account_status
 
             if send_status == "sent":
                 update_proxy_status(job.user_id, proxy["id"], "working")
@@ -362,7 +454,8 @@ class SendJobsManager:
 
             print(
                 f"[send_jobs] worker_done worker={worker_no} "
-                f"job_id={job.job_id} status={job.status} send_status={send_status}"
+                f"job_id={job.job_id} status={job.status} "
+                f"send_status={send_status} account_status={result.get('account_status')}"
             )
 
     async def _notify_result(
@@ -395,7 +488,7 @@ class SendJobsManager:
 async def ensure_send_jobs_started(
     application: Application,
     worker_count: int = 2,
-) -> SendJobsManager:
+) -> "SendJobsManager":
     manager = application.bot_data.get(BOT_DATA_KEY)
     if manager is None:
         manager = SendJobsManager(application=application, worker_count=worker_count)

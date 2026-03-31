@@ -16,32 +16,15 @@ SEND_BUTTON_TEXTS = [
 ]
 
 STRICT_SEND_BUTTON_SELECTORS = [
-    'button[aria-label="Submit message"]',
-    'button[type="submit"]',
-    'form button[type="submit"]',
-    '[data-testid="chat"] button[type="submit"]',
-    '[data-testid="chat-modal"] button[type="submit"]',
-    '#chatPortalRoot button[type="submit"]',
-    '#root-portal button[type="submit"]',
-    '[data-testid*="chat"] button[type="submit"]',
-    '[data-testid*="conversation"] button[type="submit"]',
-    '[role="dialog"] button[type="submit"]',
-    '[data-testid="send-button"]',
-    '[data-testid*="send"]',
-    'button[aria-label*="send" i]',
-    'button[aria-label*="submit" i]',
-    'button[title*="send" i]',
-    'button[title*="enviar" i]',
+    '[data-testid="chat-form-container"] button[aria-label="Submit message"][type="submit"]',
+    'button[aria-label="Submit message"][type="submit"]',
+    '[data-testid="chat-form-container"] button[type="submit"]',
 ]
 
 MESSAGE_SURFACE_SELECTORS = [
-    "#chatPortalRoot *",
-    "#root-portal *",
-    '[data-testid="chat"] *',
-    '[data-testid="chat-modal"] *',
-    '[data-testid*="chat"] *',
-    '[data-testid*="conversation"] *',
-    '[role="dialog"] *',
+    '[data-testid="messages-list-container"] [data-testid="sent-message"]',
+    '[data-testid="messages-list-container"] [data-cy="chat-message-bubble"]',
+    '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
 ]
 
 
@@ -113,7 +96,7 @@ async def click_send_button(page, input_locator) -> bool:
         locator = page.locator(selector).first
 
         try:
-            await locator.wait_for(state="attached", timeout=2500)
+            await locator.wait_for(state="attached", timeout=2000)
         except Exception:
             pass
 
@@ -138,13 +121,13 @@ async def click_send_button(page, input_locator) -> bool:
             pass
 
         try:
-            await locator.click(timeout=3000)
+            await locator.click(timeout=2500)
             return True
         except Exception:
             pass
 
         try:
-            await locator.click(force=True, timeout=3000)
+            await locator.click(force=True, timeout=2500)
             return True
         except Exception:
             continue
@@ -155,7 +138,6 @@ async def click_send_button(page, input_locator) -> bool:
             [
                 page.get_by_role("button", name=text),
                 page.locator(f"button:has-text('{text}')"),
-                page.locator(f"[role='dialog'] button:has-text('{text}')"),
             ]
         )
 
@@ -181,15 +163,9 @@ async def click_send_button(page, input_locator) -> bool:
             except Exception:
                 aria_label = None
 
-            try:
-                test_id = await item.get_attribute("data-testid")
-            except Exception:
-                test_id = None
-
             allow_click = (
                 item_type == "submit"
                 or (aria_label or "").lower() == "submit message"
-                or "send" in (test_id or "").lower()
             )
 
             if not allow_click:
@@ -201,13 +177,13 @@ async def click_send_button(page, input_locator) -> bool:
                 pass
 
             try:
-                await item.click(timeout=3000)
+                await item.click(timeout=2500)
                 return True
             except Exception:
                 pass
 
             try:
-                await item.click(force=True, timeout=3000)
+                await item.click(force=True, timeout=2500)
                 return True
             except Exception:
                 continue
@@ -265,6 +241,8 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         "post_send_url": None,
         "delivery_verified": False,
         "post_send_exact_message_match_count": 0,
+        "post_send_sent_status_found": False,
+        "post_send_sent_message_found": False,
     }
 
     for _ in range(10):
@@ -295,9 +273,32 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         except Exception:
             verification["post_send_body_has_text"] = False
 
+        try:
+            sent_status = page.locator(
+                '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]'
+            ).first
+            verification["post_send_sent_status_found"] = (
+                await sent_status.count() > 0 and await sent_status.is_visible()
+            )
+        except Exception:
+            verification["post_send_sent_status_found"] = False
+
+        try:
+            sent_message = page.locator(
+                '[data-testid="messages-list-container"] [data-testid="sent-message"]'
+            ).first
+            verification["post_send_sent_message_found"] = (
+                await sent_message.count() > 0 and await sent_message.is_visible()
+            )
+        except Exception:
+            verification["post_send_sent_message_found"] = False
+
         exact_match_count = 0
         try:
-            exact_locator = page.get_by_text(message_text, exact=True)
+            exact_locator = page.locator('[data-testid="messages-list-container"]').get_by_text(
+                message_text,
+                exact=True,
+            )
             exact_match_count = await exact_locator.count()
 
             if exact_match_count > 0:
@@ -318,7 +319,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
                     locator = page.locator(selector)
                     count = await locator.count()
 
-                    for i in range(min(count, 120)):
+                    for i in range(min(count, 80)):
                         item = locator.nth(i)
                         try:
                             if not await item.is_visible():
@@ -337,6 +338,20 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
                     continue
 
         verification["post_send_exact_message_match_count"] = exact_match_count
+
+        if (
+            verification["post_send_sent_status_found"]
+            and verification["post_send_input_empty"]
+        ):
+            verification["delivery_verified"] = True
+            return verification
+
+        if (
+            verification["post_send_sent_message_found"]
+            and verification["post_send_input_empty"]
+        ):
+            verification["delivery_verified"] = True
+            return verification
 
         if verification["post_send_message_visible"] and verification["post_send_input_empty"]:
             verification["delivery_verified"] = True

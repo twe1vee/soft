@@ -35,6 +35,33 @@ def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
 
 
+async def _has_daily_limit_banner(page) -> bool:
+    phrases = [
+        "atingiste o limite de novas conversas por dia",
+        "limite de novas conversas por dia",
+        "limite de novas conversas",
+    ]
+
+    try:
+        body = await page.locator("body").inner_text(timeout=2000)
+    except Exception:
+        body = ""
+
+    body_norm = (body or "").strip().lower()
+    if any(phrase in body_norm for phrase in phrases):
+        return True
+
+    for phrase in phrases:
+        try:
+            locator = page.get_by_text(phrase, exact=False)
+            if await locator.count() > 0 and await locator.first.is_visible():
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
 async def send_message_to_ad(
     cookies_json: str,
     proxy_text: str,
@@ -62,6 +89,7 @@ async def send_message_to_ad(
     result["chat_button_text_after_retry"] = None
     result["input_found"] = False
     result["send_button_found"] = False
+    result["daily_limit_reached"] = False
     result["timings_ms"] = {}
     result["final_message_text"] = message_text
 
@@ -156,6 +184,8 @@ async def send_message_to_ad(
         t_step = time.perf_counter()
         input_locator = await find_message_input(page)
 
+        clicked = False
+
         if input_locator is None:
             clicked, click_debug = await click_chat_button(page)
             result["message_button_clicked"] = clicked
@@ -186,9 +216,17 @@ async def send_message_to_ad(
         result.update(await collect_chat_diagnostics(page))
         result["debug_login_hint_found"] = await has_login_hint(page)
         result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
 
         if input_locator is None:
             result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+
+            if result.get("daily_limit_reached"):
+                result["status"] = "daily_limit_reached"
+                result["error"] = "OLX показал лимит на новые диалоги за день"
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="daily_limit_reached")
+                return result
 
             if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
                 result["status"] = "login_required_or_chat_blocked"
@@ -253,6 +291,15 @@ async def send_message_to_ad(
             result["timings_ms"]["collect_chat_diagnostics_send_button_not_found"] = _elapsed_ms(
                 t_step
             )
+            result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+
+            if result.get("daily_limit_reached"):
+                result["status"] = "daily_limit_reached"
+                result["error"] = "OLX показал лимит на новые диалоги за день"
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="daily_limit_reached")
+                return result
+
             result["status"] = "send_button_not_found"
             result["error"] = "Не найдена кнопка отправки сообщения"
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
@@ -270,6 +317,7 @@ async def send_message_to_ad(
         t_step = time.perf_counter()
         result.update(await collect_chat_diagnostics(page))
         result["timings_ms"]["collect_chat_diagnostics_after_verify"] = _elapsed_ms(t_step)
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
 
         if verification.get("delivery_verified"):
             result["ok"] = True
@@ -277,6 +325,13 @@ async def send_message_to_ad(
             result["sent"] = True
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
             await save_debug_artifacts(page, result, prefix="sent_success")
+            return result
+
+        if result.get("daily_limit_reached"):
+            result["status"] = "daily_limit_reached"
+            result["error"] = "OLX показал лимит на новые диалоги за день"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="daily_limit_reached")
             return result
 
         result["status"] = "send_clicked_unverified"

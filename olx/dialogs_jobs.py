@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 
 from db import (
@@ -17,11 +18,43 @@ from olx.profile_manager_gologin import (
     cleanup_stale_gologin_profiles,
 )
 
-DIALOGS_POLL_INTERVAL_SECONDS = 90
+DIALOGS_POLL_INTERVAL_MIN_SECONDS = 30
+DIALOGS_POLL_INTERVAL_MAX_SECONDS = 45
 GOLOGIN_PROFILE_CLEANUP_INTERVAL_SECONDS = 900
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60
 
-ALIVE_ACCOUNT_STATUSES = {"new", "connected", "checked", "working"}
+ALIVE_ACCOUNT_STATUSES = {
+    "new",
+    "connected",
+    "checked",
+    "working",
+    "write_limited",
+    "loading_retry",
+}
+
+
+def _get_next_dialogs_poll_interval_seconds() -> int:
+    return random.randint(
+        DIALOGS_POLL_INTERVAL_MIN_SECONDS,
+        DIALOGS_POLL_INTERVAL_MAX_SECONDS,
+    )
+
+
+def _schedule_next_dialogs_poll_job(application, *, first: int | None = None) -> None:
+    if application.job_queue is None:
+        return
+
+    next_interval = first if first is not None else _get_next_dialogs_poll_interval_seconds()
+
+    application.job_queue.run_once(
+        _dialogs_poll_job_callback,
+        when=next_interval,
+        name="dialogs_poll_job",
+        job_kwargs={
+            "misfire_grace_time": 120,
+        },
+    )
+    print(f"[dialogs_jobs] next dialogs poll scheduled after {next_interval}s")
 
 
 def is_account_alive_for_dialogs(account: dict) -> bool:
@@ -210,6 +243,7 @@ async def _dialogs_poll_job_callback(context) -> None:
     finally:
         took = int((time.perf_counter() - started) * 1000)
         print(f"[dialogs_jobs] poll_job_done took_ms={took}")
+        _schedule_next_dialogs_poll_job(context.application)
 
 
 async def _runtime_cleanup_job_callback(context) -> None:
@@ -239,21 +273,8 @@ def start_dialogs_jobs(application) -> None:
         print("[dialogs_jobs] JobQueue is not available. Install python-telegram-bot[job-queue].")
         return
 
-    application.job_queue.run_repeating(
-        _dialogs_poll_job_callback,
-        interval=DIALOGS_POLL_INTERVAL_SECONDS,
-        first=15,
-        name="dialogs_poll_job",
-        job_kwargs={
-            "max_instances": 1,
-            "coalesce": True,
-            "misfire_grace_time": 120,
-        },
-    )
-    print(
-        f"[dialogs_jobs] dialogs_poll_job added "
-        f"interval={DIALOGS_POLL_INTERVAL_SECONDS} first=15"
-    )
+    _schedule_next_dialogs_poll_job(application, first=15)
+    print("[dialogs_jobs] dialogs_poll_job added dynamic interval first=15")
 
     application.job_queue.run_repeating(
         _runtime_cleanup_job_callback,

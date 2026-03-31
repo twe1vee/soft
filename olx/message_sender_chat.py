@@ -5,75 +5,34 @@ from typing import Any
 from olx.message_sender_debug import first_non_empty_text
 
 MESSAGE_INPUT_SELECTORS = [
-    "#chatPortalRoot textarea",
-    "#root-portal textarea",
-    '[data-testid="chat-modal"] textarea',
-    '[data-testid="chat"] textarea',
-    '[data-testid="conversation-message-input"] textarea',
-    '[data-testid="message-input"] textarea',
-    '[data-testid*="message"] textarea',
-    '[data-testid*="conversation"] textarea',
-    '[data-cy*="message"] textarea',
-    ".css-1t3t97v textarea",
-    'textarea[data-testid="message-input"]',
-    'textarea[data-testid="textarea"]',
-    'textarea[name="message"]',
-    'textarea[placeholder*="mensagem" i]',
-    'textarea[placeholder*="message" i]',
-    'textarea[placeholder*="mensagem ao anunciante" i]',
+    '[data-testid="chat-form-container"] textarea[name="message.text"]',
+    '[data-testid="chat-form-container"] textarea[placeholder="Escreve uma mensagem..."]',
+    'textarea[name="message.text"]',
+    'textarea[placeholder="Escreve uma mensagem..."]',
+    '[data-testid="chat-form-container"] textarea',
     "textarea",
-    "#chatPortalRoot [role='textbox']",
-    "#root-portal [role='textbox']",
-    '[data-testid="chat-modal"] [role="textbox"]',
-    '[data-testid="chat"] [role="textbox"]',
-    '[data-testid="conversation-message-input"] [role="textbox"]',
-    '[data-testid*="message"] [role="textbox"]',
-    '[data-testid*="conversation"] [role="textbox"]',
-    '[role="dialog"] [role="textbox"]',
-    '[role="textbox"]',
-    '#chatPortalRoot [contenteditable="true"]',
-    '#root-portal [contenteditable="true"]',
-    '[data-testid="chat-modal"] [contenteditable="true"]',
-    '[data-testid="chat"] [contenteditable="true"]',
-    '[data-testid="conversation-message-input"] [contenteditable="true"]',
-    '[role="dialog"] [contenteditable="true"]',
-    '[contenteditable="true"]',
-    'div[contenteditable="true"]',
 ]
 
 CHAT_ROOT_SELECTORS = [
-    "#chatPortalRoot",
-    "#root-portal",
-    '[data-testid="chat-modal"]',
-    '[data-testid="chat"]',
-    '[data-testid="conversation-message-input"]',
-    '[data-testid*="chat"]',
-    '[data-testid*="conversation"]',
-    '[role="dialog"]',
-    'aside[role="dialog"]',
-    'div[role="dialog"]',
+    '[data-cy="conversation-top-bar"]',
+    '[data-testid="messages-list-container"]',
+    '[data-testid="chat-form-container"]',
 ]
 
 BLOCKING_HINT_SELECTORS = [
     'form[action*="login"]',
     'input[name="login[email]"]',
-    'input[name="username"]',
     'input[type="password"]',
     '[data-testid*="login"]',
     '[data-testid*="auth"]',
     'button:has-text("Iniciar sessão")',
     'button:has-text("Entrar")',
-    'button:has-text("Login")',
     'a:has-text("Iniciar sessão")',
     'a:has-text("Entrar")',
     'text=Iniciar sessão',
     'text=Entrar',
     'text=Faça login',
     'text=Fazer login',
-    'text=Sign in',
-    'text=Login',
-    'text=Zaloguj',
-    'text=Please log in',
     'text=Esta opção não está disponível',
     'text=Não foi possível iniciar o chat',
     'text=Não é possível enviar mensagem',
@@ -86,28 +45,16 @@ BLOCKING_HINT_SELECTORS = [
 def _chat_button_candidates(page):
     return [
         (
-            "seller_card_chat_button",
-            page.locator('[data-cy="seller_card"] [data-testid="chat-button"]').first,
+            "ad_contact_message_button_data_cy",
+            page.locator('button[data-cy="ad-contact-message-button"]').first,
         ),
         (
-            "ad_action_box_chat_button",
-            page.locator('[data-testid="ad-action-box"] [data-testid="chat-button"]').first,
+            "ad_contact_message_button_data_testid",
+            page.locator('button[data-testid="ad-contact-message-button"]').first,
         ),
         (
-            "generic_chat_button_enviar",
-            page.locator('button[data-testid="chat-button"]').filter(has_text="Enviar mensagem").first,
-        ),
-        (
-            "generic_chat_button_contactar",
-            page.locator('button[data-testid="chat-button"]').filter(has_text="Contactar").first,
-        ),
-        (
-            "role_button_enviar",
-            page.get_by_role("button", name="Enviar mensagem").first,
-        ),
-        (
-            "button_text_enviar",
-            page.locator("button:has-text('Enviar mensagem')").first,
+            "ad_contact_message_button_aria",
+            page.locator('button[aria-label="Enviar mensagem"]').first,
         ),
     ]
 
@@ -120,6 +67,7 @@ async def collect_element_debug(page, locator, label: str) -> dict[str, Any]:
         "enabled": None,
         "text": None,
         "data_testid": None,
+        "data_cy": None,
         "href": None,
         "class": None,
         "bounding_box": None,
@@ -156,6 +104,7 @@ async def collect_element_debug(page, locator, label: str) -> dict[str, Any]:
 
     try:
         info["data_testid"] = await el.get_attribute("data-testid")
+        info["data_cy"] = await el.get_attribute("data-cy")
         info["href"] = await el.get_attribute("href")
         info["class"] = await el.get_attribute("class")
         info["outer_html"] = await el.evaluate("(node) => node.outerHTML")
@@ -177,6 +126,7 @@ async def collect_element_debug(page, locator, label: str) -> dict[str, Any]:
                         tag: el.tagName,
                         text: (el.innerText || "").trim().slice(0, 200),
                         dataTestid: el.getAttribute("data-testid"),
+                        dataCy: el.getAttribute("data-cy"),
                         className: String(el.className || "").slice(0, 300),
                         outerHTML: (el.outerHTML || "").slice(0, 1500)
                     };
@@ -244,7 +194,7 @@ async def find_message_input(page):
             continue
 
         try:
-            await locator.wait_for(state="attached", timeout=2500)
+            await locator.wait_for(state="attached", timeout=2000)
         except Exception:
             pass
 
@@ -266,19 +216,13 @@ async def get_chat_button_debug(page) -> tuple[bool | None, str | None]:
         try:
             if await locator.count() == 0:
                 continue
+            visible = await locator.first.is_visible()
         except Exception:
             continue
 
-        visible = None
         text = None
-
         try:
-            visible = await locator.is_visible()
-        except Exception:
-            pass
-
-        try:
-            text = first_non_empty_text(await locator.inner_text())
+            text = first_non_empty_text(await locator.first.inner_text())
         except Exception:
             pass
 
@@ -305,7 +249,7 @@ async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
             continue
 
         try:
-            await locator.wait_for(state="visible", timeout=5000)
+            await locator.wait_for(state="visible", timeout=4000)
         except Exception:
             continue
 
@@ -314,7 +258,7 @@ async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
 
         try:
             await locator.scroll_into_view_if_needed()
-            await page.wait_for_timeout(300)
+            await page.wait_for_timeout(250)
         except Exception:
             pass
 
@@ -327,14 +271,14 @@ async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
                     x = box["x"] + box["width"] / 2
                     y = box["y"] + box["height"] / 2
                     await page.mouse.move(x, y)
-                    await page.wait_for_timeout(150)
+                    await page.wait_for_timeout(120)
                     await page.mouse.click(x, y)
                 elif click_mode == "normal":
-                    await locator.click(timeout=5000)
+                    await locator.click(timeout=4000)
                 else:
-                    await locator.click(force=True, timeout=5000)
+                    await locator.click(force=True, timeout=4000)
 
-                await page.wait_for_timeout(1200)
+                await page.wait_for_timeout(900)
 
                 if await has_chat_root(page):
                     debug["click_mode"] = click_mode
@@ -342,10 +286,6 @@ async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
 
                 input_locator = await find_message_input(page)
                 if input_locator is not None:
-                    debug["click_mode"] = click_mode
-                    return True, debug
-
-                if "chat=1" in (page.url or ""):
                     debug["click_mode"] = click_mode
                     return True, debug
 
@@ -357,14 +297,14 @@ async def click_chat_button(page) -> tuple[bool, dict[str, Any]]:
 
 async def wait_for_chat_mount(page) -> None:
     try:
-        await page.wait_for_load_state("networkidle", timeout=8000)
+        await page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:
         pass
 
-    for _ in range(10):
+    for _ in range(8):
         try:
             if await has_chat_root(page):
-                await page.wait_for_timeout(900)
+                await page.wait_for_timeout(700)
                 return
         except Exception:
             pass
@@ -372,15 +312,12 @@ async def wait_for_chat_mount(page) -> None:
         try:
             input_locator = await find_message_input(page)
             if input_locator is not None:
-                await page.wait_for_timeout(900)
+                await page.wait_for_timeout(700)
                 return
         except Exception:
             pass
 
-        if "chat=1" in (page.url or ""):
-            await page.wait_for_timeout(1200)
-
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(800)
 
 
 async def has_blocking_chat_gate(page) -> bool:
@@ -400,16 +337,10 @@ async def collect_chat_diagnostics(page) -> dict[str, Any]:
     data: dict[str, Any] = {
         "debug_chat_root_found": False,
         "debug_blocking_chat_gate_found": False,
-        "debug_message_input_selector": None,
+        "debug_message_input_found": False,
         "debug_message_input_tag": None,
-        "debug_message_input_type": None,
-        "debug_message_input_disabled": None,
-        "debug_message_input_readonly": None,
-        "debug_message_input_aria_disabled": None,
-        "debug_textarea_count": 0,
-        "debug_textbox_count": 0,
-        "debug_contenteditable_count": 0,
-        "debug_dialog_count": 0,
+        "debug_message_input_placeholder": None,
+        "debug_message_input_name": None,
     }
 
     try:
@@ -423,75 +354,24 @@ async def collect_chat_diagnostics(page) -> dict[str, Any]:
         pass
 
     try:
-        data["debug_textarea_count"] = await page.locator("textarea").count()
+        locator = await find_message_input(page)
+        if locator is not None:
+            data["debug_message_input_found"] = True
+            try:
+                data["debug_message_input_tag"] = await locator.evaluate(
+                    "(el) => el.tagName.toLowerCase()"
+                )
+            except Exception:
+                pass
+            try:
+                data["debug_message_input_placeholder"] = await locator.get_attribute("placeholder")
+            except Exception:
+                pass
+            try:
+                data["debug_message_input_name"] = await locator.get_attribute("name")
+            except Exception:
+                pass
     except Exception:
         pass
-
-    try:
-        data["debug_textbox_count"] = await page.locator('[role="textbox"]').count()
-    except Exception:
-        pass
-
-    try:
-        data["debug_contenteditable_count"] = await page.locator('[contenteditable="true"]').count()
-    except Exception:
-        pass
-
-    try:
-        data["debug_dialog_count"] = await page.locator('[role="dialog"]').count()
-    except Exception:
-        pass
-
-    for selector in MESSAGE_INPUT_SELECTORS:
-        locator = page.locator(selector).first
-
-        try:
-            if await locator.count() == 0:
-                continue
-        except Exception:
-            continue
-
-        try:
-            if not await locator.is_visible():
-                continue
-        except Exception:
-            continue
-
-        data["debug_message_input_selector"] = selector
-
-        try:
-            data["debug_message_input_tag"] = await locator.evaluate(
-                "(el) => el.tagName.toLowerCase()"
-            )
-        except Exception:
-            pass
-
-        try:
-            data["debug_message_input_type"] = await locator.get_attribute("type")
-        except Exception:
-            pass
-
-        try:
-            data["debug_message_input_disabled"] = (
-                await locator.get_attribute("disabled")
-            ) is not None
-        except Exception:
-            pass
-
-        try:
-            data["debug_message_input_readonly"] = (
-                await locator.get_attribute("readonly")
-            ) is not None
-        except Exception:
-            pass
-
-        try:
-            data["debug_message_input_aria_disabled"] = await locator.get_attribute(
-                "aria-disabled"
-            )
-        except Exception:
-            pass
-
-        break
 
     return data
