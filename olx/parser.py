@@ -1,6 +1,7 @@
 import re
 from playwright.async_api import async_playwright
 
+
 async def extract_price(page) -> str | None:
     possible_price_selectors = [
         '[data-testid="ad-price-container"]',
@@ -24,17 +25,24 @@ async def extract_price(page) -> str | None:
     return None
 
 
-def extract_ad_id(full_text: str) -> str | None:
-    patterns = [
-        r"ID:\s*(\d+)",
-        r"ID do anúncio:\s*(\d+)",
-        r"Advert ID:\s*(\d+)",
+async def extract_ad_id(page) -> str | None:
+    selectors = [
+        '[data-nx-name="Label2"]:has-text("ID:")',
+        'span:has-text("ID:")',
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, full_text, re.IGNORECASE)
-        if match:
-            return match.group(1)
+    for selector in selectors:
+        try:
+            elements = page.locator(selector)
+            count = await elements.count()
+
+            for i in range(count):
+                text = (await elements.nth(i).inner_text()).strip()
+                match = re.search(r"\bID\s*:\s*(\d+)\b", text, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
 
     return None
 
@@ -86,7 +94,7 @@ async def parse_olx_ad(url: str) -> dict:
         full_text = await page.locator("body").inner_text()
 
         result["price"] = await extract_price(page)
-        result["ad_id"] = extract_ad_id(full_text)
+        result["ad_id"] = await extract_ad_id(page)
         result["seller_name"] = extract_seller_name(full_text)
 
         await browser.close()
