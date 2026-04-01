@@ -33,16 +33,15 @@ async def extract_ad_id(page) -> str | None:
 
     for selector in selectors:
         try:
-            elements = page.locator(selector)
-            count = await elements.count()
+            locator = page.locator(selector).first
+            await locator.wait_for(timeout=5000)
 
-            for i in range(count):
-                text = (await elements.nth(i).inner_text()).strip()
-                match = re.search(r"\bID\s*:\s*(\d+)\b", text, re.IGNORECASE)
-                if match:
-                    return match.group(1)
+            text = (await locator.inner_text()).strip()
+            match = re.search(r"\bID\s*:\s*(\d+)\b", text, re.IGNORECASE)
+            if match:
+                return match.group(1)
         except Exception:
-            pass
+            continue
 
     return None
 
@@ -54,6 +53,7 @@ def extract_seller_name(full_text: str) -> str | None:
         "contactar anunciante",
         "utilizador",
         "todos os anúncios deste anunciante",
+        "todos os anuncios deste anunciante",
         "enviar mensagem",
         "reportar",
         "entrar ou criar conta",
@@ -91,10 +91,10 @@ async def parse_olx_ad(url: str) -> dict:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(1500)
 
-        full_text = await page.locator("body").inner_text()
-
         result["price"] = await extract_price(page)
         result["ad_id"] = await extract_ad_id(page)
+
+        full_text = await page.locator("body").inner_text()
         result["seller_name"] = extract_seller_name(full_text)
 
         await browser.close()
