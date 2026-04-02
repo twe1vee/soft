@@ -26,13 +26,9 @@ def build_incoming_dialog_text(event: dict, account: dict | None = None) -> str:
     )
 
     ad_url = event.get("ad_url")
-    conversation_url = event.get("conversation_url")
 
     if ad_url:
         lines.extend(["", f"Ссылка на объявление: {ad_url}"])
-
-    if conversation_url:
-        lines.extend(["", f"Ссылка на диалог: {conversation_url}"])
 
     return "\n".join(lines).strip()
 

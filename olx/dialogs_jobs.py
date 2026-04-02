@@ -9,7 +9,8 @@ from db import (
     get_proxy_by_id,
     get_user_accounts,
 )
-from olx.account_runtime import close_idle_account_runtimes
+from db.accounts import get_stale_user_inactive_accounts_with_profiles
+from olx.account_runtime import close_account_runtime, close_idle_account_runtimes
 from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
 from olx.profile_manager_gologin import (
@@ -112,32 +113,23 @@ async def run_dialogs_polling_for_user(
             continue
 
         proxy_id = fresh_account.get("proxy_id")
-        proxy = get_proxy_by_id(user_id, proxy_id) if proxy_id else None
-        if not proxy:
+        proxy = get_proxy_by_id(user_id, proxy_id)
+        if not proxy or not proxy.get("proxy_text"):
             print(
-                f"[dialogs_jobs] skip_account_missing_proxy "
-                f"user_id={user_id} account_id={fresh_account.get('id')} proxy_id={proxy_id}"
+                f"[dialogs_jobs] skip account_id={account_id} "
+                f"proxy_id={proxy_id} reason=proxy_not_found"
             )
             continue
 
-        if not proxy.get("proxy_text"):
-            print(
-                f"[dialogs_jobs] skip_account_empty_proxy_text "
-                f"user_id={user_id} account_id={fresh_account.get('id')} proxy_id={proxy_id}"
-            )
-            continue
-
-        alive_accounts.append(fresh_account)
         print(
             f"[dialogs_jobs] alive_account user_id={user_id} "
-            f"account_id={fresh_account.get('id')} "
-            f"proxy_id={fresh_account.get('proxy_id')} "
+            f"account_id={fresh_account.get('id')} proxy_id={proxy_id} "
             f"status={fresh_account.get('status')}"
         )
 
-        if proxy_id not in proxies_by_id:
-            proxies_by_id[proxy_id] = proxy
-            print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
+        alive_accounts.append(fresh_account)
+        proxies_by_id[int(proxy_id)] = proxy
+        print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
 
     print(
         f"[dialogs_jobs] polling user_id={user_id} "
@@ -147,56 +139,44 @@ async def run_dialogs_polling_for_user(
     if not alive_accounts:
         print(f"[dialogs_jobs] no alive accounts user_id={user_id}")
         return {
-            "accounts_checked": 0,
-            "accounts_skipped": len(accounts),
-            "total_new_incoming_count": 0,
-            "new_incoming_events": [],
-            "account_results": [],
-            "sent_notifications": 0,
+            "checked": 0,
+            "skipped": len(accounts),
+            "new_incoming": 0,
+            "events": [],
+            "accounts": [],
         }
 
     result = await check_user_dialogs(
         user_id=user_id,
         accounts=alive_accounts,
         proxies_by_id=proxies_by_id,
-        headless=True,
     )
 
     print(
         f"[dialogs_jobs] result user_id={user_id} "
-        f"checked={result.get('accounts_checked', 0)} "
-        f"skipped={result.get('accounts_skipped', 0)} "
-        f"new_incoming={result.get('total_new_incoming_count', 0)} "
-        f"events={len(result.get('new_incoming_events', []))}"
+        f"checked={result.get('checked')} skipped={result.get('skipped')} "
+        f"new_incoming={result.get('new_incoming')} "
+        f"events={len(result.get('events') or [])}"
     )
 
-    for account_result in result.get("account_results", []):
+    for item in result.get("accounts", []):
         print(
-            f"[dialogs_jobs] account_result "
-            f"user_id={user_id} "
-            f"account_id={account_result.get('account_id')} "
-            f"status={account_result.get('status')} "
-            f"parsed={account_result.get('parsed_dialogs_count', 0)} "
-            f"new_incoming={account_result.get('new_incoming_count', 0)} "
-            f"error={account_result.get('error')}"
+            f"[dialogs_jobs] account_result user_id={user_id} "
+            f"account_id={item.get('account_id')} "
+            f"status={item.get('status')} parsed={item.get('parsed_count')} "
+            f"new_incoming={item.get('new_incoming')} "
+            f"error={item.get('error')}"
         )
 
-    accounts_by_id = {a["id"]: a for a in alive_accounts}
-
-    sent_notifications = await send_incoming_dialog_notifications(
-        bot=application.bot,
-        chat_id=telegram_chat_id,
-        events=result.get("new_incoming_events", []),
-        accounts_by_id=accounts_by_id,
+    notifications = await send_incoming_dialog_notifications(
+        application=application,
+        telegram_chat_id=telegram_chat_id,
+        events=result.get("events") or [],
     )
-
-    result["sent_notifications"] = sent_notifications
-
     print(
-        f"[dialogs_jobs] notifier_done "
-        f"user_id={user_id} "
-        f"events={len(result.get('new_incoming_events', []))} "
-        f"sent_notifications={sent_notifications}"
+        f"[dialogs_jobs] notifier_done user_id={user_id} "
+        f"events={len(result.get('events') or [])} "
+        f"sent_notifications={notifications.get('sent_count', 0)}"
     )
 
     return result
@@ -207,14 +187,9 @@ async def run_dialogs_polling_iteration(application) -> None:
     print(f"[dialogs_jobs] iteration_start users={len(users)}")
 
     for user in users:
-        telegram_id = user.get("telegram_id")
         user_id = user.get("id")
-
-        if not telegram_id or not user_id:
-            print(
-                f"[dialogs_jobs] skip invalid user "
-                f"user_id={user_id} telegram_id={telegram_id}"
-            )
+        telegram_id = user.get("telegram_id")
+        if not user_id or not telegram_id:
             continue
 
         try:
@@ -256,6 +231,21 @@ async def _runtime_cleanup_job_callback(context) -> None:
 
 async def _gologin_profile_cleanup_job_callback(context) -> None:
     try:
+        stale_accounts = get_stale_user_inactive_accounts_with_profiles(
+            GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
+        )
+
+        for item in stale_accounts:
+            account_id = int(item["id"])
+            closed = await close_account_runtime(
+                account_id,
+                reason="user_inactive_cleanup",
+            )
+            print(
+                f"[gologin_cleanup] preclose account_id={account_id} "
+                f"closed_runtime={closed}"
+            )
+
         result = cleanup_stale_gologin_profiles(
             idle_seconds=GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
         )

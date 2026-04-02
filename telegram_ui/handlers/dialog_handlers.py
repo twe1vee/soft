@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from db import get_conversation_by_id
+from db.accounts import touch_account_user_active
 from olx.dialogs_reply import send_reply_to_conversation
 from telegram_ui.menu import build_back_to_menu_keyboard
 from telegram_ui.handlers.common import get_current_user
@@ -97,6 +98,8 @@ async def handle_dialog_reply_text(
     user_id = current_user["id"]
 
     conversation = get_conversation_by_id(user_id, int(conversation_id))
+
+    touch_account_user_active(int(account_id))
 
     await update.message.reply_text("⏳ Отправляю ответ продавцу...")
 

@@ -292,15 +292,21 @@ async def check_account_dialogs(
                     f"conversation_key={conversation_key!r}"
                 )
 
+            resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
+            resolved_ad_external_id = item.get("ad_external_id") or (
+                existing_conversation or {}
+            ).get("ad_external_id")
+            resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
+
             conversation_id = create_or_update_conversation(
                 user_id=user_id,
                 account_id=account_id,
                 conversation_key=conversation_key,
                 conversation_url=item.get("conversation_url"),
                 seller_name=item.get("seller_name"),
-                ad_title=item.get("ad_title"),
-                ad_url=item.get("ad_url"),
-                ad_external_id=item.get("ad_external_id"),
+                ad_title=resolved_ad_title,
+                ad_url=resolved_ad_url,
+                ad_external_id=resolved_ad_external_id,
                 last_message_preview=item.get("last_message_text"),
                 last_message_at_hint=item.get("updated_hint"),
                 is_unread=bool(item.get("is_unread")),
@@ -346,9 +352,9 @@ async def check_account_dialogs(
                     "message_id": message_id,
                     "account_id": account_id,
                     "seller_name": item.get("seller_name"),
-                    "ad_title": item.get("ad_title"),
-                    "ad_url": item.get("ad_url"),
-                    "ad_external_id": item.get("ad_external_id"),
+                    "ad_title": resolved_ad_title,
+                    "ad_url": resolved_ad_url,
+                    "ad_external_id": resolved_ad_external_id,
                     "conversation_url": item.get("conversation_url"),
                     "text": item.get("last_message_text"),
                     "is_unread": bool(item.get("is_unread")),

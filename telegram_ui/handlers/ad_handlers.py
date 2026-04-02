@@ -1,4 +1,5 @@
 import re
+from db.accounts import touch_account_user_active
 from telegram.constants import ParseMode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, NetworkError, TimedOut
@@ -428,7 +429,10 @@ async def handle_ad_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
             return
 
+        touch_account_user_active(account_id)
+
         cookies_json = account.get("cookies_json")
+
         if not cookies_json:
             update_ad_status(user_id, ad_row_id, "send_blocked_missing_cookies")
             await safe_edit_message_text(

@@ -1,8 +1,10 @@
 import json
 
+from db.accounts import touch_account_user_active
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+
 from olx.account_runtime import close_account_runtime, mark_account_runtime_deleted
 from db import (
     create_account,
@@ -136,7 +138,6 @@ def normalize_proxy_status_from_account_check(account_status: str | None) -> str
         return "proxy_failed"
 
     if value in {"not_logged_in"}:
-        # Прокси при этом может быть живой, просто аккаунт неавторизован
         return "working"
 
     return "failed"
@@ -296,6 +297,8 @@ async def show_account_card(query, user_id: int, account_id: int):
         )
         return
 
+    touch_account_user_active(account_id)
+
     profile_name = account_display_name(account)
     status = humanize_account_status(account.get("status"))
     last_check_at = account.get("last_check_at") or "ещё не проверялся"
@@ -368,6 +371,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             )
             return
 
+        touch_account_user_active(account_id)
+
         proxies = get_user_proxies(user_id)
         if not proxies:
             await safe_edit_message_text(
@@ -397,6 +402,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             await safe_edit_message_text(query, "Аккаунт не найден.")
             return
 
+        touch_account_user_active(account_id)
+
         proxy = get_proxy_by_id(user_id, proxy_id)
         if not proxy:
             await safe_edit_message_text(
@@ -420,6 +427,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             await safe_edit_message_text(query, "Аккаунт не найден.")
             return
 
+        touch_account_user_active(account_id)
+
         update_account_proxy(user_id, account_id, None)
         await show_account_card(query, user_id, account_id)
         return
@@ -438,6 +447,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
                 ]),
             )
             return
+
+        touch_account_user_active(account_id)
 
         proxy_id = account.get("proxy_id")
         if not proxy_id:
@@ -539,6 +550,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
                 ]),
             )
             return
+
+        touch_account_user_active(account_id)
 
         context.user_data.clear()
         context.user_data["awaiting_account_cookies_update"] = account_id
@@ -660,6 +673,7 @@ async def handle_account_cookies_text(update: Update, context: ContextTypes.DEFA
             return
 
         update_account_cookies(user_id, account_id, normalized)
+        touch_account_user_active(account_id)
 
         sync_note = ""
         try:
@@ -715,6 +729,7 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
             return
 
         update_account_cookies(user_id, account_id, normalized)
+        touch_account_user_active(account_id)
 
         sync_note = ""
         try:
@@ -730,6 +745,7 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
 
         context.user_data.clear()
         await update.message.reply_text("✅ Cookies обновлены." + sync_note)
+
 
 async def _delete_account_and_profile(*, user_id: int, account_id: int) -> str:
     cleanup_lines: list[str] = []

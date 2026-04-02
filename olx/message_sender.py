@@ -6,14 +6,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
 from olx.browser_session import dismiss_cookie_banner_if_present
-from olx.message_sender_chat import (
-    click_chat_button,
-    collect_chat_diagnostics,
-    find_message_input,
-    get_chat_button_debug,
-    has_blocking_chat_gate,
-    wait_for_chat_mount,
-)
+from olx.chat_open_guard import ensure_chat_open
+from olx.message_sender_chat import collect_chat_diagnostics
 from olx.message_sender_debug import (
     base_result,
     safe_locator_text,
@@ -21,7 +15,6 @@ from olx.message_sender_debug import (
 )
 from olx.message_sender_page import (
     handle_olx_soft_error_page,
-    has_login_hint,
     is_cloudfront_block_page,
 )
 from olx.message_sender_submit import (
@@ -90,6 +83,7 @@ async def send_message_to_ad(
     result["input_found"] = False
     result["send_button_found"] = False
     result["daily_limit_reached"] = False
+    result["recovered_by_reload"] = False
     result["timings_ms"] = {}
     result["final_message_text"] = message_text
 
@@ -141,7 +135,6 @@ async def send_message_to_ad(
             pass
 
         result["final_url"] = page.url
-
         try:
             result["page_title"] = await page.title()
         except Exception:
@@ -162,15 +155,14 @@ async def send_message_to_ad(
                 result["page_title"] = await page.title()
             except Exception:
                 pass
-
             result["final_url"] = page.url
 
-            if await is_cloudfront_block_page(page):
-                result["status"] = "cloudfront_blocked"
-                result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
-                result["timings_ms"]["total"] = _elapsed_ms(t_total)
-                await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
-                return result
+        if await is_cloudfront_block_page(page):
+            result["status"] = "cloudfront_blocked"
+            result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
+            return result
 
         t_step = time.perf_counter()
         await dismiss_cookie_banner_if_present(page)
@@ -182,41 +174,48 @@ async def send_message_to_ad(
         result["timings_ms"]["collect_chat_diagnostics_initial"] = _elapsed_ms(t_step)
 
         t_step = time.perf_counter()
-        input_locator = await find_message_input(page)
+        chat_open = await ensure_chat_open(
+            page,
+            target_url=ad_url,
+            allow_reload=True,
+            settle_ms=700,
+        )
+        input_locator = chat_open.get("input_locator")
 
-        clicked = False
+        for key in (
+            "message_button_clicked",
+            "message_button_clicked_retry",
+            "chat_button_retry_debug",
+            "chat_button_still_visible_after_click",
+            "chat_button_text_after_click",
+            "chat_button_still_visible_after_retry",
+            "chat_button_text_after_retry",
+            "clicked_candidate",
+            "clicked_candidate_debug",
+            "click_mode",
+            "chat_button_candidates",
+            "recovered_by_reload",
+            "debug_login_hint_found",
+            "debug_blocking_chat_gate_found",
+            "debug_chat_root_found",
+            "debug_message_input_found",
+            "debug_message_input_tag",
+            "debug_message_input_placeholder",
+            "debug_message_input_name",
+            "handled_soft_error_page",
+        ):
+            if key in chat_open:
+                result[key] = chat_open.get(key)
 
-        if input_locator is None:
-            clicked, click_debug = await click_chat_button(page)
-            result["message_button_clicked"] = clicked
-            result.update(click_debug)
-
-            visible_after_click, text_after_click = await get_chat_button_debug(page)
-            result["chat_button_still_visible_after_click"] = visible_after_click
-            result["chat_button_text_after_click"] = text_after_click
-
-            if clicked:
-                await wait_for_chat_mount(page)
-                input_locator = await find_message_input(page)
-
-        if input_locator is None and clicked:
-            await page.wait_for_timeout(350)
-            clicked_retry, click_debug_retry = await click_chat_button(page)
-            result["message_button_clicked_retry"] = clicked_retry
-            result["chat_button_retry_debug"] = click_debug_retry
-
-            visible_after_retry, text_after_retry = await get_chat_button_debug(page)
-            result["chat_button_still_visible_after_retry"] = visible_after_retry
-            result["chat_button_text_after_retry"] = text_after_retry
-
-            if clicked_retry:
-                await wait_for_chat_mount(page)
-                input_locator = await find_message_input(page)
-
-        result.update(await collect_chat_diagnostics(page))
-        result["debug_login_hint_found"] = await has_login_hint(page)
-        result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
         result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+
+        if chat_open.get("cloudfront_blocked"):
+            result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+            result["status"] = "cloudfront_blocked"
+            result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
+            return result
 
         if input_locator is None:
             result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
@@ -231,18 +230,18 @@ async def send_message_to_ad(
             if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
                 result["status"] = "login_required_or_chat_blocked"
                 result["error"] = (
-                    "После клика по chat-button открылся логин/блокирующий интерфейс вместо поля ввода"
+                    "После попыток открыть чат открылся логин/блокирующий интерфейс "
+                    "вместо поля ввода"
                 )
                 result["timings_ms"]["total"] = _elapsed_ms(t_total)
-                await save_debug_artifacts(
-                    page,
-                    result,
-                    prefix="login_required_or_chat_blocked",
-                )
+                await save_debug_artifacts(page, result, prefix="login_required_or_chat_blocked")
                 return result
 
             result["status"] = "message_input_not_found"
-            result["error"] = "Не найдено поле ввода сообщения после клика по chat-button"
+            result["error"] = (
+                "Не найдено поле ввода сообщения после retry открытия чата "
+                "и одного reload страницы"
+            )
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
             await save_debug_artifacts(page, result, prefix="message_input_not_found")
             return result
@@ -317,6 +316,7 @@ async def send_message_to_ad(
         t_step = time.perf_counter()
         result.update(await collect_chat_diagnostics(page))
         result["timings_ms"]["collect_chat_diagnostics_after_verify"] = _elapsed_ms(t_step)
+
         result["daily_limit_reached"] = await _has_daily_limit_banner(page)
 
         if verification.get("delivery_verified"):
@@ -360,13 +360,11 @@ async def send_message_to_ad(
         result["error"] = str(exc)
         result["status"] = "browser_failed"
         result["timings_ms"]["total"] = _elapsed_ms(t_total)
-
         try:
             if page is not None:
                 await save_debug_artifacts(page, result, prefix=result["status"])
         except Exception:
             pass
-
         return result
 
     finally:

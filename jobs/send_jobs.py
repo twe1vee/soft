@@ -24,8 +24,17 @@ from db import (
 from olx.message_sender import send_message_to_ad
 
 BOT_DATA_KEY = "send_jobs_manager"
-SEND_JITTER_MIN_SECONDS = 8
-SEND_JITTER_MAX_SECONDS = 18
+
+# Было 8..18, делаем мягче для лучшего throughput
+SEND_JITTER_MIN_SECONDS = 2
+SEND_JITTER_MAX_SECONDS = 6
+
+# Задержка перед повторной постановкой transient-задачи
+REQUEUE_RETRY_MIN_SECONDS = 3
+REQUEUE_RETRY_MAX_SECONDS = 6
+
+# Для текущего этапа достаточно 2 попыток: первая + 1 requeue retry
+DEFAULT_MAX_ATTEMPTS = 2
 
 TRANSIENT_SEND_STATUSES = {
     "message_input_not_found",
@@ -64,6 +73,12 @@ class SendMessageJob:
     error: str | None = None
     result: dict[str, Any] | None = None
 
+    attempt: int = 1
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    retry_of_job_id: str | None = None
+    retry_scheduled_at: float | None = None
+    last_send_status: str | None = None
+
 
 def _build_send_result_text(
     ad: dict | None,
@@ -86,20 +101,28 @@ def _build_send_result_text(
 
     account_status_text = account_status_map.get(account_status, account_status)
 
+    prefix = ""
+    if result.get("retry_used"):
+        first_try_status = result.get("first_try_status")
+        if first_try_status:
+            prefix = f"Повторная попытка после: {first_try_status}\n"
+        else:
+            prefix = "Повторная попытка использовалась\n"
+
     if result.get("ok") or result.get("sent") or status == "sent":
         if account_status_text:
-            return f"📤 Доставлено\nСтатус аккаунта: {account_status_text}"
-        return "📤 Доставлено"
+            return f"{prefix}📤 Доставлено\nСтатус аккаунта: {account_status_text}".strip()
+        return f"{prefix}📤 Доставлено".strip()
 
     if error:
         if account_status_text:
-            return f"📤 Ошибка\n{error}\nСтатус аккаунта: {account_status_text}"
-        return f"📤 Ошибка\n{error}"
+            return f"{prefix}📤 Ошибка\n{error}\nСтатус аккаунта: {account_status_text}".strip()
+        return f"{prefix}📤 Ошибка\n{error}".strip()
 
     if account_status_text:
-        return f"📤 Ошибка\nСтатус: {status}\nСтатус аккаунта: {account_status_text}"
+        return f"{prefix}📤 Ошибка\nСтатус: {status}\nСтатус аккаунта: {account_status_text}".strip()
 
-    return f"📤 Ошибка\nСтатус: {status}"
+    return f"{prefix}📤 Ошибка\nСтатус: {status}".strip()
 
 
 def _build_failure_result(
@@ -137,13 +160,30 @@ def _map_send_status_to_account_status(send_status: str, *, retry_used: bool) ->
 
     return None
 
-async def _sleep_before_send(account_id: int) -> None:
+
+async def _sleep_before_send(account_id: int, *, attempt: int) -> None:
     delay = random.uniform(SEND_JITTER_MIN_SECONDS, SEND_JITTER_MAX_SECONDS)
-    print(f"[send_jobs] pre_send_delay account_id={account_id} sleep={delay:.2f}s")
+    print(
+        f"[send_jobs] pre_send_delay account_id={account_id} "
+        f"attempt={attempt} sleep={delay:.2f}s"
+    )
     await asyncio.sleep(delay)
 
+
+def _build_queue_metrics(manager: "SendJobsManager") -> str:
+    running = sum(1 for job in manager.jobs.values() if job.status == "running")
+    queued = manager.queue.qsize()
+    retry_wait = sum(1 for job in manager.jobs.values() if job.status == "retry_wait")
+    done = sum(1 for job in manager.jobs.values() if job.status == "done")
+    failed = sum(1 for job in manager.jobs.values() if job.status == "failed")
+    return (
+        f"queue={queued} running={running} retry_wait={retry_wait} "
+        f"done={done} failed={failed}"
+    )
+
+
 class SendJobsManager:
-    def __init__(self, application: Application, worker_count: int = 2):
+    def __init__(self, application: Application, worker_count: int = 4):
         self.application = application
         self.worker_count = max(1, int(worker_count))
         self.queue: asyncio.Queue[str] = asyncio.Queue()
@@ -191,6 +231,7 @@ class SendJobsManager:
         proxy_id: int,
         chat_id: int,
         source_message_id: int | None,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> SendMessageJob:
         job = SendMessageJob(
             job_id=uuid4().hex[:12],
@@ -201,12 +242,14 @@ class SendJobsManager:
             proxy_id=proxy_id,
             chat_id=chat_id,
             source_message_id=source_message_id,
+            max_attempts=max(1, int(max_attempts)),
         )
         self.jobs[job.job_id] = job
         await self.queue.put(job.job_id)
         print(
             f"[send_jobs] queued job_id={job.job_id} "
-            f"user_id={user_id} ad_row_id={ad_row_id} account_id={account_id}"
+            f"user_id={user_id} ad_row_id={ad_row_id} account_id={account_id} "
+            f"attempt={job.attempt}/{job.max_attempts} {_build_queue_metrics(self)}"
         )
         return job
 
@@ -219,6 +262,38 @@ class SendJobsManager:
             lock = asyncio.Lock()
             self.account_locks[account_id] = lock
         return lock
+
+    async def _requeue_job_later(
+        self,
+        job: SendMessageJob,
+        *,
+        delay_seconds: float,
+        first_try_status: str,
+    ) -> None:
+        job.status = "retry_wait"
+        job.retry_scheduled_at = time.time() + delay_seconds
+        job.last_send_status = first_try_status
+
+        print(
+            f"[send_jobs] retry_scheduled job_id={job.job_id} "
+            f"account_id={job.account_id} attempt={job.attempt}/{job.max_attempts} "
+            f"first_try_status={first_try_status} delay={delay_seconds:.2f}s "
+            f"{_build_queue_metrics(self)}"
+        )
+
+        async def _delayed_put() -> None:
+            try:
+                await asyncio.sleep(delay_seconds)
+                await self.queue.put(job.job_id)
+                print(
+                    f"[send_jobs] retry_enqueued job_id={job.job_id} "
+                    f"account_id={job.account_id} next_attempt={job.attempt + 1}/{job.max_attempts} "
+                    f"{_build_queue_metrics(self)}"
+                )
+            except Exception as exc:
+                print(f"[send_jobs] retry_enqueue_failed job_id={job.job_id} error={exc}")
+
+        asyncio.create_task(_delayed_put(), name=f"send-requeue-{job.job_id}")
 
     async def _worker_loop(self, worker_no: int) -> None:
         print(f"[send_jobs] worker_started worker={worker_no}")
@@ -262,12 +337,16 @@ class SendJobsManager:
         account_lock = self.get_account_lock(job.account_id)
 
         async with account_lock:
+            if job.status == "retry_wait":
+                job.attempt += 1
+
             job.status = "running"
             job.started_at = time.time()
 
             print(
                 f"[send_jobs] worker_pick worker={worker_no} "
-                f"job_id={job.job_id} account_id={job.account_id}"
+                f"job_id={job.job_id} account_id={job.account_id} "
+                f"attempt={job.attempt}/{job.max_attempts} {_build_queue_metrics(self)}"
             )
 
             ad = get_ad_by_id(job.user_id, job.ad_row_id)
@@ -369,7 +448,7 @@ class SendJobsManager:
             update_pending_action_status(job.pending_action_id, "running")
             update_account_last_check(job.user_id, job.account_id)
 
-            await _sleep_before_send(job.account_id)
+            await _sleep_before_send(job.account_id, attempt=job.attempt)
 
             result = await send_message_to_ad(
                 cookies_json=cookies_json,
@@ -383,32 +462,34 @@ class SendJobsManager:
             )
 
             send_status = result.get("status") or "unknown_error"
-            retry_used = False
-
-            if send_status in TRANSIENT_SEND_STATUSES:
-                update_account_status(job.user_id, job.account_id, "loading_retry")
-                await asyncio.sleep(random.uniform(2.5, 5.5))
-
-                retry_used = True
-                retry_result = await send_message_to_ad(
-                    cookies_json=cookies_json,
-                    proxy_text=proxy["proxy_text"],
-                    ad_url=ad_url,
-                    message_text=draft_text,
-                    headless=True,
-                    user_id=job.user_id,
-                    account_id=job.account_id,
-                    olx_profile_name=account.get("olx_profile_name"),
-                )
-
-                retry_status = retry_result.get("status") or "unknown_error"
-                retry_result["first_try_status"] = send_status
-                retry_result["retry_used"] = True
-
-                result = retry_result
-                send_status = retry_status
+            job.last_send_status = send_status
+            retry_used = job.attempt > 1
 
             update_proxy_last_check(job.user_id, proxy["id"])
+
+            if send_status in TRANSIENT_SEND_STATUSES and job.attempt < job.max_attempts:
+                update_account_status(job.user_id, job.account_id, "loading_retry")
+                result["account_status"] = "loading_retry"
+                result["first_try_status"] = send_status
+                result["retry_used"] = False
+                result["attempt"] = job.attempt
+                result["max_attempts"] = job.max_attempts
+
+                delay_seconds = random.uniform(
+                    REQUEUE_RETRY_MIN_SECONDS,
+                    REQUEUE_RETRY_MAX_SECONDS,
+                )
+                await self._requeue_job_later(
+                    job,
+                    delay_seconds=delay_seconds,
+                    first_try_status=send_status,
+                )
+                return
+
+            if retry_used:
+                result["retry_used"] = True
+                if job.last_send_status:
+                    result.setdefault("first_try_status", job.last_send_status)
 
             account_status = _map_send_status_to_account_status(send_status, retry_used=retry_used)
             if account_status:
@@ -455,7 +536,8 @@ class SendJobsManager:
             print(
                 f"[send_jobs] worker_done worker={worker_no} "
                 f"job_id={job.job_id} status={job.status} "
-                f"send_status={send_status} account_status={result.get('account_status')}"
+                f"send_status={send_status} account_status={result.get('account_status')} "
+                f"attempt={job.attempt}/{job.max_attempts} {_build_queue_metrics(self)}"
             )
 
     async def _notify_result(
@@ -487,7 +569,7 @@ class SendJobsManager:
 
 async def ensure_send_jobs_started(
     application: Application,
-    worker_count: int = 2,
+    worker_count: int = 4,
 ) -> "SendJobsManager":
     manager = application.bot_data.get(BOT_DATA_KEY)
     if manager is None:
