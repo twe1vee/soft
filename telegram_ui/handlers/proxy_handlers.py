@@ -246,25 +246,43 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
         updated_proxy = get_proxy_by_id(user_id, proxy_id)
         ui_status = humanize_proxy_status(updated_proxy.get("status"))
 
+        raw_error = (result.get("error") or "").strip()
+
+        human_error = None
+        if raw_error:
+            lower_error = raw_error.lower()
+
+            if "timeout" in lower_error:
+                human_error = "Прокси не ответил вовремя."
+            elif "407" in lower_error or "proxy authentication" in lower_error or "auth" in lower_error:
+                human_error = "Неверный логин или пароль прокси."
+            elif "403" in lower_error:
+                human_error = "Доступ через этот прокси был отклонён."
+            elif "tunnel" in lower_error:
+                human_error = "Не удалось установить соединение через прокси."
+            elif "dns" in lower_error or "name resolution" in lower_error:
+                human_error = "Не удалось определить адрес прокси."
+            elif "connection refused" in lower_error:
+                human_error = "Прокси отклонил подключение."
+            elif "connection reset" in lower_error:
+                human_error = "Соединение через прокси было сброшено."
+            elif "network" in lower_error:
+                human_error = "Ошибка сети при проверке прокси."
+            else:
+                human_error = "Прокси не прошёл проверку."
+
         text_lines = [
-            "🔎 Проверка прокси завершена\n",
+            "🔎 Проверка прокси завершена",
+            "",
             f"Прокси: {proxy_short(updated_proxy.get('proxy_text', ''), max_len=70)}",
             f"Статус: {ui_status}",
-            f"Engine: {result.get('browser_engine') or 'gologin'}",
-            f"Final URL: {result.get('final_url') or '—'}",
         ]
 
-        if result.get("page_title"):
-            text_lines.append(f"Title: {result['page_title']}")
-
-        if result.get("body_length") is not None:
-            text_lines.append(f"Body length: {result['body_length']}")
-
-        if result.get("attempts_used"):
-            text_lines.append(f"Attempts: {result['attempts_used']}")
-
-        if result.get("error"):
-            text_lines.append(f"Ошибка: {result['error']}")
+        if human_error and ui_status != "живой":
+            text_lines.extend([
+                "",
+                f"Причина: {human_error}",
+            ])
 
         await safe_edit_message_text(
             query,
