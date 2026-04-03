@@ -77,7 +77,6 @@ def _build_account_rename_result_text(account: dict, result: dict) -> str:
             f"Было: {previous_name}\n"
             f"Стало: {saved_name}\n"
             f"Задержка перед сменой: {delay_seconds} сек\n"
-            f"Final URL: {final_url}"
         )
 
     if status == "unchanged":
@@ -407,8 +406,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             query,
             "✏️ Изменение имени профиля\n\n"
             "Пришли новое имя одним следующим сообщением.\n\n"
-            "Оно будет изменено прямо на площадке OLX.\n"
-            "Перед самой сменой софт подождёт случайно 2–4 секунды.",
+            "Оно будет изменено на площадке OLX.\n"
+            "Перед самой сменой софт подождёт 2–4 секунды.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
@@ -555,7 +554,7 @@ async def handle_account_profile_rename_text(
         "⏳ Меняю имя профиля на OLX...\n\n"
         f"Аккаунт: {account_display_name(account)}\n"
         f"Новое имя: {new_name}\n"
-        "Перед сменой будет случайная пауза 2–4 сек."
+        "Перед сменой будет пауза 2–4 сек."
     )
 
     result = await update_olx_profile_name(

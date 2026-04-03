@@ -101,9 +101,28 @@ def normalize_proxy_status_from_account_check(account_status: str | None) -> str
 
 def short_proxy_text(proxy_text: str, max_len: int = 60) -> str:
     value = (proxy_text or "").strip()
-    if len(value) <= max_len:
-        return value
-    return value[:max_len] + "..."
+    if not value:
+        return ""
+
+    lower = value.lower()
+    if "://" in lower:
+        value = value.split("://", 1)[1]
+
+    if "@" in value:
+        right = value.rsplit("@", 1)[1].strip()
+        if right:
+            return right[:max_len] if len(right) > max_len else right
+
+    parts = [p.strip() for p in value.split(":")]
+
+    # host:port:user:pass -> host:port
+    if len(parts) >= 2:
+        host = parts[0]
+        port = parts[1]
+        host_port = f"{host}:{port}"
+        return host_port[:max_len] if len(host_port) > max_len else host_port
+
+    return value[:max_len] if len(value) > max_len else value
 
 
 def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
