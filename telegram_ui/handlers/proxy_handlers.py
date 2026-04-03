@@ -173,7 +173,7 @@ async def show_proxy_card(query, user_id: int, proxy_id: int):
     await safe_edit_message_text(
         query,
         "📄 Карточка прокси\n\n"
-        f"Прокси: {proxy.get('proxy_text')}\n"
+        f"Прокси: {proxy_short(proxy.get('proxy_text'))}\n"
         f"Статус: {ui_status}\n\n"
         f"Последняя проверка: {last_check_at}",
         reply_markup=build_proxy_card_keyboard(proxy_id),
