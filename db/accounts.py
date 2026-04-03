@@ -19,24 +19,6 @@ def ensure_accounts_last_used_column():
     conn.close()
 
 
-def ensure_accounts_user_last_active_column():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(accounts)")
-    columns = {str(row["name"]) for row in cursor.fetchall()}
-    if "user_last_active_at" not in columns:
-        cursor.execute(
-            "ALTER TABLE accounts ADD COLUMN user_last_active_at INTEGER DEFAULT NULL"
-        )
-        conn.commit()
-    conn.close()
-
-
-def ensure_accounts_activity_columns():
-    ensure_accounts_last_used_column()
-    ensure_accounts_user_last_active_column()
-
-
 def touch_account_last_used(account_id: int, ts: int | None = None) -> bool:
     ensure_accounts_last_used_column()
 
@@ -46,25 +28,6 @@ def touch_account_last_used(account_id: int, ts: int | None = None) -> bool:
         """
         UPDATE accounts
         SET last_used_at = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (int(ts or time.time()), int(account_id)),
-    )
-    conn.commit()
-    changed = cursor.rowcount > 0
-    conn.close()
-    return changed
-
-
-def touch_account_user_active(account_id: int, ts: int | None = None) -> bool:
-    ensure_accounts_user_last_active_column()
-
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        UPDATE accounts
-        SET user_last_active_at = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
         (int(ts or time.time()), int(account_id)),
@@ -119,7 +82,6 @@ def get_stale_accounts_with_profiles(idle_seconds: int) -> list[dict]:
 
 
 def get_stale_user_inactive_accounts_with_profiles(idle_seconds: int) -> list[dict]:
-    ensure_accounts_user_last_active_column()
     threshold = int(time.time()) - int(idle_seconds)
 
     conn = get_connection()
@@ -127,16 +89,19 @@ def get_stale_user_inactive_accounts_with_profiles(idle_seconds: int) -> list[di
     cursor.execute(
         """
         SELECT
-            id,
-            user_id,
-            olx_profile_name,
-            gologin_profile_id,
-            gologin_profile_name,
-            user_last_active_at
-        FROM accounts
-        WHERE user_last_active_at IS NOT NULL
-          AND user_last_active_at < ?
-        ORDER BY id ASC
+            a.id,
+            a.user_id,
+            a.olx_profile_name,
+            a.gologin_profile_id,
+            a.gologin_profile_name,
+            u.last_active_at AS user_last_active_at
+        FROM accounts a
+        INNER JOIN users u ON u.id = a.user_id
+        WHERE a.gologin_profile_id IS NOT NULL
+          AND TRIM(a.gologin_profile_id) != ''
+          AND u.last_active_at IS NOT NULL
+          AND u.last_active_at < ?
+        ORDER BY a.id ASC
         """,
         (threshold,),
     )
@@ -152,7 +117,7 @@ def create_account(
     olx_profile_name: str | None = None,
     browser_engine: str = "gologin",
 ) -> int:
-    ensure_accounts_activity_columns()
+    ensure_accounts_last_used_column()
 
     now_ts = int(time.time())
 
@@ -166,10 +131,9 @@ def create_account(
             cookies_json,
             status,
             browser_engine,
-            last_used_at,
-            user_last_active_at
+            last_used_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -177,7 +141,6 @@ def create_account(
             cookies_json,
             status,
             browser_engine,
-            now_ts,
             now_ts,
         ),
     )

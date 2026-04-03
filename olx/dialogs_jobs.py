@@ -72,6 +72,19 @@ def is_account_alive_for_dialogs(account: dict) -> bool:
     return True
 
 
+def _build_empty_poll_result(total_accounts: int) -> dict:
+    return {
+        "ok": True,
+        "status": "ok",
+        "accounts_checked": 0,
+        "accounts_skipped": total_accounts,
+        "total_new_incoming_count": 0,
+        "account_results": [],
+        "new_incoming_events": [],
+        "sent_notifications": 0,
+    }
+
+
 async def run_dialogs_polling_for_user(
     *,
     application,
@@ -138,13 +151,7 @@ async def run_dialogs_polling_for_user(
 
     if not alive_accounts:
         print(f"[dialogs_jobs] no alive accounts user_id={user_id}")
-        return {
-            "checked": 0,
-            "skipped": len(accounts),
-            "new_incoming": 0,
-            "events": [],
-            "accounts": [],
-        }
+        return _build_empty_poll_result(len(accounts))
 
     result = await check_user_dialogs(
         user_id=user_id,
@@ -152,33 +159,46 @@ async def run_dialogs_polling_for_user(
         proxies_by_id=proxies_by_id,
     )
 
+    accounts_checked = int(result.get("accounts_checked") or 0)
+    accounts_skipped = int(result.get("accounts_skipped") or 0)
+    total_new_incoming_count = int(result.get("total_new_incoming_count") or 0)
+    account_results = result.get("account_results") or []
+    new_incoming_events = result.get("new_incoming_events") or []
+
     print(
         f"[dialogs_jobs] result user_id={user_id} "
-        f"checked={result.get('checked')} skipped={result.get('skipped')} "
-        f"new_incoming={result.get('new_incoming')} "
-        f"events={len(result.get('events') or [])}"
+        f"accounts_checked={accounts_checked} "
+        f"accounts_skipped={accounts_skipped} "
+        f"total_new_incoming_count={total_new_incoming_count} "
+        f"events={len(new_incoming_events)}"
     )
 
-    for item in result.get("accounts", []):
+    for item in account_results:
         print(
             f"[dialogs_jobs] account_result user_id={user_id} "
             f"account_id={item.get('account_id')} "
-            f"status={item.get('status')} parsed={item.get('parsed_count')} "
-            f"new_incoming={item.get('new_incoming')} "
+            f"status={item.get('status')} "
+            f"parsed={item.get('parsed_dialogs_count')} "
+            f"new_incoming={item.get('new_incoming_count')} "
             f"error={item.get('error')}"
         )
 
-    notifications = await send_incoming_dialog_notifications(
-        application=application,
-        telegram_chat_id=telegram_chat_id,
-        events=result.get("events") or [],
-    )
-    print(
-        f"[dialogs_jobs] notifier_done user_id={user_id} "
-        f"events={len(result.get('events') or [])} "
-        f"sent_notifications={notifications.get('sent_count', 0)}"
+    accounts_by_id = {int(a["id"]): a for a in alive_accounts if a.get("id") is not None}
+
+    sent_notifications = await send_incoming_dialog_notifications(
+        bot=application.bot,
+        chat_id=telegram_chat_id,
+        events=new_incoming_events,
+        accounts_by_id=accounts_by_id,
     )
 
+    print(
+        f"[dialogs_jobs] notifier_done user_id={user_id} "
+        f"events={len(new_incoming_events)} "
+        f"sent_notifications={sent_notifications}"
+    )
+
+    result["sent_notifications"] = sent_notifications
     return result
 
 

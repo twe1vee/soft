@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from olx.dialogs_page import dismiss_dialogs_overlays_if_present
 from olx.message_sender_chat import (
@@ -12,7 +12,11 @@ from olx.message_sender_chat import (
     has_chat_root,
     wait_for_chat_mount,
 )
-from olx.message_sender_page import handle_olx_soft_error_page, has_login_hint, is_cloudfront_block_page
+from olx.message_sender_page import (
+    handle_olx_soft_error_page,
+    has_login_hint,
+    is_cloudfront_block_page,
+)
 
 
 async def _sleep(page, ms: int) -> None:
@@ -20,6 +24,60 @@ async def _sleep(page, ms: int) -> None:
         await page.wait_for_timeout(ms)
     except Exception:
         pass
+
+
+def _build_guard_result() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status_hint": "message_input_not_found",
+        "input_locator": None,
+        "recovered_by_reload": False,
+        "cloudfront_blocked": False,
+        "handled_soft_error_page": False,
+        "debug_login_hint_found": False,
+        "debug_blocking_chat_gate_found": False,
+        "debug_chat_root_found": False,
+        "debug_message_input_found": False,
+        "message_button_clicked": False,
+        "message_button_clicked_retry": False,
+        "chat_button_retry_debug": None,
+        "chat_button_still_visible_after_click": None,
+        "chat_button_text_after_click": None,
+        "chat_button_still_visible_after_retry": None,
+        "chat_button_text_after_retry": None,
+    }
+
+
+def _finalize_guard_status(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("input_locator") is not None:
+        result["ok"] = True
+        result["status_hint"] = "chat_ready"
+        return result
+
+    if result.get("cloudfront_blocked"):
+        result["ok"] = False
+        result["status_hint"] = "cloudfront_blocked"
+        return result
+
+    if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
+        result["ok"] = False
+        result["status_hint"] = "login_required_or_chat_blocked"
+        return result
+
+    result["ok"] = False
+    result["status_hint"] = "message_input_not_found"
+    return result
+
+
+async def _collect_guard_debug(page, result: dict[str, Any]) -> None:
+    diag = await collect_chat_diagnostics(page)
+    result.update(diag)
+    result["debug_login_hint_found"] = await has_login_hint(page)
+    result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
+    result["debug_chat_root_found"] = bool(
+        result.get("debug_chat_root_found") or await has_chat_root(page)
+    )
+    result["debug_message_input_found"] = bool(result.get("input_locator") is not None)
 
 
 async def _try_open_once(
@@ -91,25 +149,17 @@ async def ensure_chat_open(
 ) -> dict[str, Any]:
     """
     Возвращает dict с:
+      - ok
+      - status_hint: chat_ready / cloudfront_blocked / login_required_or_chat_blocked / message_input_not_found
       - input_locator
       - recovered_by_reload
       - message_button_clicked / retry debug
       - debug_* diagnostics
-      - login/block flags
       - cloudfront_blocked
       - handled_soft_error_page
     """
 
-    result: dict[str, Any] = {
-        "input_locator": None,
-        "recovered_by_reload": False,
-        "cloudfront_blocked": False,
-        "handled_soft_error_page": False,
-        "debug_login_hint_found": False,
-        "debug_blocking_chat_gate_found": False,
-        "debug_chat_root_found": False,
-        "debug_message_input_found": False,
-    }
+    result = _build_guard_result()
 
     await dismiss_dialogs_overlays_if_present(page)
     await _sleep(page, 250)
@@ -118,23 +168,20 @@ async def ensure_chat_open(
     result.update({k: v for k, v in attempt1.items() if k != "input_locator"})
     result["input_locator"] = attempt1.get("input_locator")
 
-    diag = await collect_chat_diagnostics(page)
-    result.update(diag)
-    result["debug_login_hint_found"] = await has_login_hint(page)
-    result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
+    await _collect_guard_debug(page, result)
 
     if result["input_locator"] is not None:
-        return result
+        return _finalize_guard_status(result)
 
     if result["debug_login_hint_found"] or result["debug_blocking_chat_gate_found"]:
-        return result
+        return _finalize_guard_status(result)
 
     if await is_cloudfront_block_page(page):
         result["cloudfront_blocked"] = True
-        return result
+        return _finalize_guard_status(result)
 
     if not allow_reload or not target_url:
-        return result
+        return _finalize_guard_status(result)
 
     try:
         await page.reload(wait_until="domcontentloaded", timeout=45000)
@@ -142,34 +189,31 @@ async def ensure_chat_open(
         try:
             await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
         except Exception:
-            return result
+            return _finalize_guard_status(result)
 
     await _sleep(page, 1400)
 
     handled_soft_error = await handle_olx_soft_error_page(page)
-    result["handled_soft_error_page"] = bool(result["handled_soft_error_page"] or handled_soft_error)
+    result["handled_soft_error_page"] = bool(
+        result["handled_soft_error_page"] or handled_soft_error
+    )
 
     await dismiss_dialogs_overlays_if_present(page)
     await _sleep(page, 400)
 
     if await is_cloudfront_block_page(page):
         result["cloudfront_blocked"] = True
-        return result
+        return _finalize_guard_status(result)
 
     attempt2 = await _try_open_once(page, settle_ms=settle_ms)
     result["recovered_by_reload"] = True
     result["input_locator"] = attempt2.get("input_locator")
 
-    # не затираем первые debug-поля пустыми значениями без необходимости
     for key, value in attempt2.items():
         if key == "input_locator":
             continue
         if value is not None:
             result[key] = value
 
-    diag = await collect_chat_diagnostics(page)
-    result.update(diag)
-    result["debug_login_hint_found"] = await has_login_hint(page)
-    result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
-
-    return result
+    await _collect_guard_debug(page, result)
+    return _finalize_guard_status(result)

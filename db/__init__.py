@@ -5,6 +5,8 @@ from .users import (
     create_user,
     get_or_create_user,
     get_active_users,
+    touch_user_last_active,
+    update_user_profile_fields,
 )
 
 from .ads import (
@@ -90,6 +92,8 @@ __all__ = [
     "create_user",
     "get_or_create_user",
     "get_active_users",
+    "touch_user_last_active",
+    "update_user_profile_fields",
     "ad_exists",
     "ad_seen_globally",
     "count_global_ad_views",

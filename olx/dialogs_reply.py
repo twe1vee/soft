@@ -26,8 +26,8 @@ from olx.message_sender_submit import (
 
 
 def _build_outgoing_message_key(
-        conversation_id: int,
-        text: str,
+    conversation_id: int,
+    text: str,
 ) -> str:
     import hashlib
 
@@ -35,13 +35,76 @@ def _build_outgoing_message_key(
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
 
+def _apply_chat_open_result(
+    result: dict[str, Any],
+    chat_open: dict[str, Any],
+) -> Any:
+    for key in (
+        "message_button_clicked",
+        "message_button_clicked_retry",
+        "chat_button_retry_debug",
+        "chat_button_still_visible_after_click",
+        "chat_button_text_after_click",
+        "chat_button_still_visible_after_retry",
+        "chat_button_text_after_retry",
+        "clicked_candidate",
+        "clicked_candidate_debug",
+        "click_mode",
+        "chat_button_candidates",
+        "recovered_by_reload",
+        "debug_login_hint_found",
+        "debug_blocking_chat_gate_found",
+        "debug_chat_root_found",
+        "debug_message_input_found",
+        "debug_message_input_tag",
+        "debug_message_input_placeholder",
+        "debug_message_input_name",
+        "handled_soft_error_page",
+        "cloudfront_blocked",
+        "status_hint",
+    ):
+        if key in chat_open:
+            result[key] = chat_open.get(key)
+
+    input_locator = chat_open.get("input_locator")
+    result["input_found"] = input_locator is not None
+    return input_locator
+
+
+def _apply_chat_open_failure(
+    result: dict[str, Any],
+    chat_open: dict[str, Any],
+) -> bool:
+    status_hint = chat_open.get("status_hint")
+
+    if status_hint == "cloudfront_blocked":
+        result["status"] = "cloudfront_blocked"
+        result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+        return True
+
+    if status_hint == "login_required_or_chat_blocked":
+        result["status"] = "login_required_or_chat_blocked"
+        result["error"] = "Вместо поля ввода открылся логин/блокирующий интерфейс"
+        return True
+
+    if status_hint == "message_input_not_found":
+        result["status"] = "message_input_not_found"
+        result["error"] = (
+            "Не найдено поле ввода сообщения после retry открытия чата "
+            "и одного reload страницы"
+        )
+        return True
+
+    return False
+
+
 async def send_reply_to_conversation(
-        *,
-        user_id: int,
-        conversation_id: int,
-        account_id: int,
-        message_text: str,
-        headless: bool = True,
+    *,
+    user_id: int,
+    conversation_id: int,
+    account_id: int,
+    message_text: str,
+    headless: bool = True,
 ) -> dict[str, Any]:
     result = base_result()
     result["conversation_id"] = conversation_id
@@ -54,6 +117,7 @@ async def send_reply_to_conversation(
     result["input_found"] = False
     result["send_button_found"] = False
     result["recovered_by_reload"] = False
+    result["status_hint"] = None
 
     if not (message_text or "").strip():
         result["status"] = "invalid_input"
@@ -91,9 +155,9 @@ async def send_reply_to_conversation(
         return result
 
     target_url = (
-            conversation.get("conversation_url")
-            or conversation.get("ad_url")
-            or "https://www.olx.pt/myaccount/answers/"
+        conversation.get("conversation_url")
+        or conversation.get("ad_url")
+        or "https://www.olx.pt/myaccount/answers/"
     )
     result["target_url"] = target_url
 
@@ -158,42 +222,10 @@ async def send_reply_to_conversation(
             allow_reload=True,
             settle_ms=700,
         )
-        input_locator = chat_open.get("input_locator")
+        input_locator = _apply_chat_open_result(result, chat_open)
 
-        for key in (
-                "message_button_clicked",
-                "message_button_clicked_retry",
-                "chat_button_retry_debug",
-                "chat_button_still_visible_after_click",
-                "chat_button_text_after_click",
-                "chat_button_still_visible_after_retry",
-                "chat_button_text_after_retry",
-                "clicked_candidate",
-                "clicked_candidate_debug",
-                "click_mode",
-                "chat_button_candidates",
-                "recovered_by_reload",
-                "debug_login_hint_found",
-                "debug_blocking_chat_gate_found",
-                "debug_chat_root_found",
-                "debug_message_input_found",
-                "debug_message_input_tag",
-                "debug_message_input_placeholder",
-                "debug_message_input_name",
-                "handled_soft_error_page",
-        ):
-            if key in chat_open:
-                result[key] = chat_open.get(key)
-
-        if chat_open.get("cloudfront_blocked"):
-            result["status"] = "cloudfront_blocked"
-            result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
-            return result
-
-        if input_locator is None:
-            if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
-                result["status"] = "login_required_or_chat_blocked"
-                result["error"] = "Вместо поля ввода открылся логин/блокирующий интерфейс"
+        if not chat_open.get("ok"):
+            if _apply_chat_open_failure(result, chat_open):
                 return result
 
             result["status"] = "message_input_not_found"
@@ -203,15 +235,13 @@ async def send_reply_to_conversation(
             )
             return result
 
-        result["input_found"] = True
-
         await fill_message_input(input_locator, message_text)
         await page.wait_for_timeout(700)
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first
             result["submit_button_visible_before_click"] = (
-                    await submit_btn.count() > 0 and await submit_btn.is_visible()
+                await submit_btn.count() > 0 and await submit_btn.is_visible()
             )
             result["submit_button_text_before_click"] = await safe_locator_text(submit_btn)
         except Exception:
@@ -224,7 +254,7 @@ async def send_reply_to_conversation(
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first
             result["submit_button_visible_after_click"] = (
-                    await submit_btn.count() > 0 and await submit_btn.is_visible()
+                await submit_btn.count() > 0 and await submit_btn.is_visible()
             )
             result["submit_button_text_after_click"] = await safe_locator_text(submit_btn)
         except Exception:
