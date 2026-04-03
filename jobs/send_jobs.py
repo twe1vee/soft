@@ -21,6 +21,17 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
+from jobs.send_outcome import (
+    build_ad_failure_status,
+    build_message_failure_status,
+    is_success_send_status,
+    should_mark_proxy_failed,
+)
+from jobs.send_result_text import build_failure_result, build_send_result_text
+from jobs.send_retry_policy import (
+    map_send_status_to_account_status,
+    should_requeue_send_status,
+)
 from olx.message_sender import send_message_to_ad
 
 BOT_DATA_KEY = "send_jobs_manager"
@@ -36,23 +47,6 @@ REQUEUE_RETRY_MAX_SECONDS = 6
 # Для текущего этапа достаточно 2 попыток: первая + 1 requeue retry
 DEFAULT_MAX_ATTEMPTS = 2
 
-TRANSIENT_SEND_STATUSES = {
-    "message_input_not_found",
-    "send_button_not_found",
-    "send_clicked_unverified",
-    "timeout",
-}
-
-DEAD_SEND_STATUSES = {
-    "cloudfront_blocked",
-    "login_required_or_chat_blocked",
-    "browser_failed",
-}
-
-WRITE_LIMITED_SEND_STATUSES = {
-    "daily_limit_reached",
-}
-
 
 @dataclass(slots=True)
 class SendMessageJob:
@@ -64,101 +58,17 @@ class SendMessageJob:
     proxy_id: int
     chat_id: int
     source_message_id: int | None = None
-
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
-
     error: str | None = None
     result: dict[str, Any] | None = None
-
     attempt: int = 1
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     retry_of_job_id: str | None = None
     retry_scheduled_at: float | None = None
     last_send_status: str | None = None
-
-
-def _build_send_result_text(
-    ad: dict | None,
-    account: dict | None,
-    proxy: dict | None,
-    result: dict[str, Any],
-    *,
-    job_id: str,
-) -> str:
-    status = result.get("status") or "unknown"
-    error = result.get("error")
-    account_status = result.get("account_status")
-
-    account_status_map = {
-        "working": "живой",
-        "loading_retry": "не прогрузился, был повтор",
-        "write_limited": "лимит на новые сообщения",
-        "dead": "мёртвый",
-    }
-
-    account_status_text = account_status_map.get(account_status, account_status)
-
-    prefix = ""
-    if result.get("retry_used"):
-        first_try_status = result.get("first_try_status")
-        if first_try_status:
-            prefix = f"Повторная попытка после: {first_try_status}\n"
-        else:
-            prefix = "Повторная попытка использовалась\n"
-
-    if result.get("ok") or result.get("sent") or status == "sent":
-        if account_status_text:
-            return f"{prefix}📤 Доставлено\nСтатус аккаунта: {account_status_text}".strip()
-        return f"{prefix}📤 Доставлено".strip()
-
-    if error:
-        if account_status_text:
-            return f"{prefix}📤 Ошибка\n{error}\nСтатус аккаунта: {account_status_text}".strip()
-        return f"{prefix}📤 Ошибка\n{error}".strip()
-
-    if account_status_text:
-        return f"{prefix}📤 Ошибка\nСтатус: {status}\nСтатус аккаунта: {account_status_text}".strip()
-
-    return f"{prefix}📤 Ошибка\nСтатус: {status}".strip()
-
-
-def _build_failure_result(
-    *,
-    status: str,
-    error: str,
-    ad: dict | None = None,
-    account: dict | None = None,
-    proxy: dict | None = None,
-) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "sent": False,
-        "status": status,
-        "error": error,
-        "ad_url": (ad or {}).get("url"),
-        "account_id": (account or {}).get("id"),
-        "proxy_id": (proxy or {}).get("id"),
-        "final_url": (ad or {}).get("url"),
-    }
-
-
-def _map_send_status_to_account_status(send_status: str, *, retry_used: bool) -> str | None:
-    if send_status == "sent":
-        return "working"
-
-    if send_status in WRITE_LIMITED_SEND_STATUSES:
-        return "write_limited"
-
-    if send_status in TRANSIENT_SEND_STATUSES:
-        return "dead" if retry_used else "loading_retry"
-
-    if send_status in DEAD_SEND_STATUSES:
-        return "dead"
-
-    return None
 
 
 async def _sleep_before_send(account_id: int, *, attempt: int) -> None:
@@ -246,6 +156,7 @@ class SendJobsManager:
         )
         self.jobs[job.job_id] = job
         await self.queue.put(job.job_id)
+
         print(
             f"[send_jobs] queued job_id={job.job_id} "
             f"user_id={user_id} ad_row_id={ad_row_id} account_id={account_id} "
@@ -351,7 +262,7 @@ class SendJobsManager:
 
             ad = get_ad_by_id(job.user_id, job.ad_row_id)
             if not ad:
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="ad_not_found",
                     error="Объявление не найдено или не принадлежит пользователю",
                 )
@@ -365,7 +276,7 @@ class SendJobsManager:
             if not account:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_account_not_found")
                 update_pending_action_status(job.pending_action_id, "failed")
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="account_not_found",
                     error="Аккаунт не найден",
                     ad=ad,
@@ -380,7 +291,7 @@ class SendJobsManager:
             if not cookies_json:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_missing_cookies")
                 update_pending_action_status(job.pending_action_id, "failed")
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="missing_cookies",
                     error="У аккаунта отсутствуют cookies_json",
                     ad=ad,
@@ -396,7 +307,7 @@ class SendJobsManager:
             if not proxy or not proxy.get("proxy_text"):
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_proxy_not_found")
                 update_pending_action_status(job.pending_action_id, "failed")
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="proxy_not_found",
                     error="Proxy не найден или пустой",
                     ad=ad,
@@ -415,7 +326,7 @@ class SendJobsManager:
             if not ad_url:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_missing_url")
                 update_pending_action_status(job.pending_action_id, "failed")
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="missing_url",
                     error="У объявления отсутствует URL",
                     ad=ad,
@@ -431,7 +342,7 @@ class SendJobsManager:
             if not draft_text:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_empty_draft")
                 update_pending_action_status(job.pending_action_id, "failed")
-                result = _build_failure_result(
+                result = build_failure_result(
                     status="empty_draft",
                     error="У объявления пустой draft_text",
                     ad=ad,
@@ -462,12 +373,18 @@ class SendJobsManager:
             )
 
             send_status = result.get("status") or "unknown_error"
-            job.last_send_status = send_status
             retry_used = job.attempt > 1
+            first_try_status = job.last_send_status
+
+            job.last_send_status = send_status
 
             update_proxy_last_check(job.user_id, proxy["id"])
 
-            if send_status in TRANSIENT_SEND_STATUSES and job.attempt < job.max_attempts:
+            if should_requeue_send_status(
+                send_status,
+                attempt=job.attempt,
+                max_attempts=job.max_attempts,
+            ):
                 update_account_status(job.user_id, job.account_id, "loading_retry")
                 result["account_status"] = "loading_retry"
                 result["first_try_status"] = send_status
@@ -488,15 +405,18 @@ class SendJobsManager:
 
             if retry_used:
                 result["retry_used"] = True
-                if job.last_send_status:
-                    result.setdefault("first_try_status", job.last_send_status)
+                if first_try_status:
+                    result.setdefault("first_try_status", first_try_status)
 
-            account_status = _map_send_status_to_account_status(send_status, retry_used=retry_used)
+            account_status = map_send_status_to_account_status(
+                send_status,
+                retry_used=retry_used,
+            )
             if account_status:
                 update_account_status(job.user_id, job.account_id, account_status)
                 result["account_status"] = account_status
 
-            if send_status == "sent":
+            if is_success_send_status(send_status):
                 update_proxy_status(job.user_id, proxy["id"], "working")
                 update_ad_status(job.user_id, job.ad_row_id, "sent")
                 update_pending_action_status(job.pending_action_id, "done")
@@ -508,16 +428,20 @@ class SendJobsManager:
                 )
                 job.status = "done"
             else:
-                if send_status == "proxy_failed":
+                if should_mark_proxy_failed(send_status):
                     update_proxy_status(job.user_id, proxy["id"], "failed")
 
-                update_ad_status(job.user_id, job.ad_row_id, f"send_failed:{send_status}")
+                update_ad_status(
+                    job.user_id,
+                    job.ad_row_id,
+                    build_ad_failure_status(send_status),
+                )
                 update_pending_action_status(job.pending_action_id, "failed")
                 create_message(
                     ad_db_id=job.ad_row_id,
                     direction="outgoing",
                     text=draft_text,
-                    status=f"send_failed:{send_status}",
+                    status=build_message_failure_status(send_status),
                 )
                 job.status = "failed"
 
@@ -549,14 +473,13 @@ class SendJobsManager:
         account: dict | None,
         proxy: dict | None,
     ) -> None:
-        text = _build_send_result_text(
+        text = build_send_result_text(
             ad=ad,
             account=account,
             proxy=proxy,
             result=result,
             job_id=job.job_id,
         )
-
         try:
             await self.application.bot.send_message(
                 chat_id=job.chat_id,
@@ -575,7 +498,6 @@ async def ensure_send_jobs_started(
     if manager is None:
         manager = SendJobsManager(application=application, worker_count=worker_count)
         application.bot_data[BOT_DATA_KEY] = manager
-
     await manager.start()
     return manager
 

@@ -28,7 +28,8 @@ def init_db():
             first_name TEXT,
             last_name TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active_at INTEGER
         )
         """
     )
@@ -184,6 +185,9 @@ def init_db():
         """
     )
 
+    if not _column_exists(cursor, "users", "last_active_at"):
+        cursor.execute("ALTER TABLE users ADD COLUMN last_active_at INTEGER")
+
     if not _column_exists(cursor, "accounts", "proxy_id"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN proxy_id INTEGER")
 
@@ -224,6 +228,7 @@ def init_db():
         cursor.execute("ALTER TABLE conversation_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active_at ON users(last_active_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_id ON ads(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_user_status ON ads(user_id, status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ads_ad_id ON ads(ad_id)")
