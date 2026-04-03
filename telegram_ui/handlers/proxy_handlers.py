@@ -229,7 +229,7 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
         await safe_edit_message_text(
             query,
-            "⏳ Проверяю прокси через GoLogin profile launch...\n\n"
+            "⏳ Проверяю прокси...\n\n"
             f"Прокси: {proxy_short(proxy.get('proxy_text', ''), max_len=50)}"
         )
 
@@ -308,7 +308,7 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
         await safe_edit_message_text(
             query,
-            f"Ты точно хочешь удалить прокси?\n\n{proxy.get('proxy_text')}",
+            f"Ты точно хочешь удалить прокси?\n\n{proxy_short(proxy.get('proxy_text', ''), max_len=70)}",
             reply_markup=build_proxy_delete_confirm_keyboard(proxy_id),
         )
         return
