@@ -14,6 +14,7 @@ from telegram_ui.handlers.account_handlers import (
     handle_account_callback,
     handle_account_cookies_text,
     handle_account_cookies_document,
+    handle_account_profile_rename_text,
 )
 from telegram_ui.handlers.ad_handlers import (
     handle_ad_callback,
@@ -95,6 +96,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("awaiting_proxies"):
         await handle_proxies_text(update, context, text)
+        return
+
+    if context.user_data.get("awaiting_account_profile_rename"):
+        await handle_account_profile_rename_text(update, context, text)
         return
 
     if (

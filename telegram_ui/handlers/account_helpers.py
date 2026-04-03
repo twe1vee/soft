@@ -127,8 +127,9 @@ def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
 
 def build_account_card_keyboard(account_id: int, has_proxy: bool) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("🔎 Проверить аккаунт", callback_data=f"account:check:{account_id}")],
-        [InlineKeyboardButton("🔗 Привязать прокси", callback_data=f"account:bind_proxy:{account_id}")],
+        [InlineKeyboardButton(" Проверить аккаунт", callback_data=f"account:check:{account_id}")],
+        [InlineKeyboardButton("✏️ Изменить имя", callback_data=f"account:rename:{account_id}")],
+        [InlineKeyboardButton(" Привязать прокси", callback_data=f"account:bind_proxy:{account_id}")],
     ]
 
     if has_proxy:
@@ -136,13 +137,12 @@ def build_account_card_keyboard(account_id: int, has_proxy: bool) -> InlineKeybo
 
     rows.extend([
         [InlineKeyboardButton("♻️ Обновить cookies", callback_data=f"account:update_cookies:{account_id}")],
-        [InlineKeyboardButton("🗑 Удалить аккаунт", callback_data=f"account:delete:{account_id}")],
+        [InlineKeyboardButton(" Удалить аккаунт", callback_data=f"account:delete:{account_id}")],
         [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
+        [InlineKeyboardButton(" Главное меню", callback_data="menu:main")],
     ])
 
     return InlineKeyboardMarkup(rows)
-
 
 def build_account_delete_confirm_keyboard(account_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
