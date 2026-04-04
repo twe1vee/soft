@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from olx.markets import get_market_policy
-
+from olx.markets.registry import get_market_policy
 
 def get_market_home_url(market_code: str | None = None) -> str:
     return get_market_policy(market_code).home_url
