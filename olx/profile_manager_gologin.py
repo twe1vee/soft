@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 from urllib.parse import urlparse
+from olx.markets import get_market_policy
 
 import requests
 from gologin import GoLogin
@@ -101,7 +102,8 @@ def cookies_to_gologin(cookies_json: str) -> list[dict[str, Any]]:
         elif url:
             cookie["url"] = url
         else:
-            cookie["domain"] = ".olx.pt"
+            policy = get_market_policy("olx_pt")
+            cookie["domain"] = f".{policy.cookie_domains[0]}"
 
         expires = item.get("expires")
         if isinstance(expires, (int, float)) and expires > 0:

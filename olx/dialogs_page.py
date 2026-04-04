@@ -3,64 +3,29 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from olx.markets.dialog_packs import get_dialog_pack
+from olx.markets.helpers import get_market_dialogs_url
 
-DIALOGS_URL = "https://www.olx.pt/myaccount/answers/?my_ads=0"
 
-_DIALOGS_READY_SELECTORS = [
-    '[data-cy="chat-list"]',
-    '[data-testid="chat-list"]',
-    '[data-cy="chat-item"]',
-    '[data-testid="chat-item"]',
-    'a[href*="/d/oferta/"]',
-    'a[href*="/d/anuncio/"]',
-    'a[href*="/myaccount/answers/"]',
-    'main',
-]
+DEFAULT_DIALOGS_MARKET = "olx_pt"
 
-_EMPTY_STATE_SELECTORS = [
-    '[data-cy="empty-state"]',
-    '[data-testid="empty-state"]',
-    'text=/sem mensagens/i',
-    'text=/nenhuma mensagem/i',
-    'text=/ainda não tens mensagens/i',
-    'text=/não tem mensagens/i',
-]
 
-_LOGIN_HINT_SELECTORS = [
-    'input[name="email"]',
-    'input[type="email"]',
-    'input[name="username"]',
-    'input[name="password"]',
-    'form[action*="login"]',
-    'text=/iniciar sessão/i',
-    'text=/inicia sessão/i',
-    'text=/login/i',
-]
+def _build_dialogs_url(market_code: str = DEFAULT_DIALOGS_MARKET) -> str:
+    pack = get_dialog_pack(market_code)
+    base_url = get_market_dialogs_url(market_code)
+    suffix = (pack.get("dialogs_url_suffix") or "").strip()
+    return f"{base_url}{suffix}"
 
-_BLOCK_SELECTORS = [
-    'text=/attention required/i',
-    'text=/sorry, you have been blocked/i',
-    'text=/cloudflare/i',
-    'text=/cloudfront/i',
-    'text=/request blocked/i',
-    'text=/access denied/i',
-]
 
-_OVERLAY_SELECTORS = [
-    'button[aria-label="Fechar"]',
-    'button[aria-label="Close"]',
-    'button[data-cy="close-button"]',
-    'button[data-testid="close-button"]',
-    '[data-cy="modal"] button',
-    '[role="dialog"] button',
-    '[data-testid="dialog"] button',
-    'button:has-text("Fechar")',
-    'button:has-text("Aceitar")',
-    'button:has-text("Accept")',
-    'button:has-text("Continuar")',
-    'button:has-text("Entendi")',
-    'button:has-text("OK")',
-]
+def _get_pack_selectors(market_code: str = DEFAULT_DIALOGS_MARKET) -> dict:
+    pack = get_dialog_pack(market_code)
+    return {
+        "ready": list(pack.get("ready_selectors") or []),
+        "empty": list(pack.get("empty_state_selectors") or []),
+        "login": list(pack.get("login_hint_selectors") or []),
+        "block": list(pack.get("block_selectors") or []),
+        "overlay": list(pack.get("overlay_selectors") or []),
+    }
 
 
 async def _safe_count(page, selector: str) -> int:
@@ -103,10 +68,15 @@ async def _wait_for_any(
     return None
 
 
-async def dismiss_dialogs_overlays_if_present(page) -> bool:
+async def dismiss_dialogs_overlays_if_present(
+    page,
+    *,
+    market_code: str = DEFAULT_DIALOGS_MARKET,
+) -> bool:
+    selectors = _get_pack_selectors(market_code)["overlay"]
     dismissed = False
 
-    for selector in _OVERLAY_SELECTORS:
+    for selector in selectors:
         try:
             locator = page.locator(selector).first
             if await locator.count() < 1:
@@ -134,9 +104,13 @@ async def open_dialogs_page(
     *,
     timeout: int = 45000,
     wait_after_ms: int = 2500,
+    market_code: str = DEFAULT_DIALOGS_MARKET,
 ) -> dict[str, Any]:
+    selectors = _get_pack_selectors(market_code)
+    dialogs_url = _build_dialogs_url(market_code)
+
     result: dict[str, Any] = {
-        "target_url": DIALOGS_URL,
+        "target_url": dialogs_url,
         "final_url": None,
         "page_title": None,
         "dialog_rows_found": 0,
@@ -145,9 +119,10 @@ async def open_dialogs_page(
         "login_hint_found": False,
         "cloudfront_blocked": False,
         "handled_soft_error_page": False,
+        "market_code": market_code,
     }
 
-    await page.goto(DIALOGS_URL, wait_until="domcontentloaded", timeout=timeout)
+    await page.goto(dialogs_url, wait_until="domcontentloaded", timeout=timeout)
     await page.wait_for_timeout(wait_after_ms)
 
     result["final_url"] = getattr(page, "url", None)
@@ -156,7 +131,7 @@ async def open_dialogs_page(
     except Exception:
         result["page_title"] = None
 
-    await dismiss_dialogs_overlays_if_present(page)
+    await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
 
     for _ in range(3):
         try:
@@ -168,13 +143,13 @@ async def open_dialogs_page(
         except Exception:
             break
 
-    block_match = await _match_any(page, _BLOCK_SELECTORS)
+    block_match = await _match_any(page, selectors["block"])
     if block_match:
         result["cloudfront_blocked"] = True
         result["ready_selector"] = block_match
         return result
 
-    login_match = await _match_any(page, _LOGIN_HINT_SELECTORS)
+    login_match = await _match_any(page, selectors["login"])
     if login_match:
         result["login_hint_found"] = True
         result["ready_selector"] = login_match
@@ -182,7 +157,7 @@ async def open_dialogs_page(
 
     ready_match = await _wait_for_any(
         page,
-        _DIALOGS_READY_SELECTORS + _EMPTY_STATE_SELECTORS + _LOGIN_HINT_SELECTORS + _BLOCK_SELECTORS,
+        selectors["ready"] + selectors["empty"] + selectors["login"] + selectors["block"],
         timeout_ms=min(timeout, 12000),
         poll_ms=500,
     )
@@ -196,28 +171,28 @@ async def open_dialogs_page(
     if ready_match:
         result["ready_selector"] = ready_match
 
-    block_match = await _match_any(page, _BLOCK_SELECTORS)
+    block_match = await _match_any(page, selectors["block"])
     if block_match:
         result["cloudfront_blocked"] = True
         if not result["ready_selector"]:
             result["ready_selector"] = block_match
         return result
 
-    login_match = await _match_any(page, _LOGIN_HINT_SELECTORS)
+    login_match = await _match_any(page, selectors["login"])
     if login_match:
         result["login_hint_found"] = True
         if not result["ready_selector"]:
             result["ready_selector"] = login_match
         return result
 
-    empty_match = await _match_any(page, _EMPTY_STATE_SELECTORS)
+    empty_match = await _match_any(page, selectors["empty"])
     if empty_match:
         result["empty_state_found"] = True
         result["ready_selector"] = result["ready_selector"] or empty_match
         return result
 
     total_rows = 0
-    for selector in _DIALOGS_READY_SELECTORS:
+    for selector in selectors["ready"]:
         total_rows += await _safe_count(page, selector)
     result["dialog_rows_found"] = total_rows
 
@@ -227,32 +202,32 @@ async def open_dialogs_page(
     try:
         await page.reload(wait_until="domcontentloaded", timeout=timeout)
         await page.wait_for_timeout(2000)
-        await dismiss_dialogs_overlays_if_present(page)
+        await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
     except Exception:
         pass
 
     result["final_url"] = getattr(page, "url", None)
 
-    block_match = await _match_any(page, _BLOCK_SELECTORS)
+    block_match = await _match_any(page, selectors["block"])
     if block_match:
         result["cloudfront_blocked"] = True
         result["ready_selector"] = result["ready_selector"] or block_match
         return result
 
-    login_match = await _match_any(page, _LOGIN_HINT_SELECTORS)
+    login_match = await _match_any(page, selectors["login"])
     if login_match:
         result["login_hint_found"] = True
         result["ready_selector"] = result["ready_selector"] or login_match
         return result
 
-    empty_match = await _match_any(page, _EMPTY_STATE_SELECTORS)
+    empty_match = await _match_any(page, selectors["empty"])
     if empty_match:
         result["empty_state_found"] = True
         result["ready_selector"] = result["ready_selector"] or empty_match
         return result
 
     total_rows = 0
-    for selector in _DIALOGS_READY_SELECTORS:
+    for selector in selectors["ready"]:
         total_rows += await _safe_count(page, selector)
     result["dialog_rows_found"] = total_rows
 
@@ -260,5 +235,6 @@ async def open_dialogs_page(
         return result
 
     raise asyncio.TimeoutError(
-        f"dialogs page did not become ready; final_url={result['final_url']} title={result['page_title']}"
+        f"dialogs page did not become ready; "
+        f"market={market_code} final_url={result['final_url']} title={result['page_title']}"
     )

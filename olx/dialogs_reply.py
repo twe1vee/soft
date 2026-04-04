@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from olx.markets.helpers import get_market_dialogs_url
 
 from db import (
     create_conversation_message,
@@ -161,7 +162,7 @@ async def _send_reply_once(
     target_url = (
         conversation.get("conversation_url")
         or conversation.get("ad_url")
-        or "https://www.olx.pt/myaccount/answers/"
+        or get_market_dialogs_url("olx_pt")
     )
     result["target_url"] = target_url
 

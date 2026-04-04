@@ -6,11 +6,10 @@ from typing import AsyncIterator
 from playwright.async_api import Browser, BrowserContext, Page
 
 from olx.browser_session_gologin import open_gologin_browser_context
+from olx.markets.helpers import get_market_account_url, get_market_home_url
 
-
-PT_HOME_URL = "https://www.olx.pt/"
-PT_ACCOUNT_URL = "https://www.olx.pt/myaccount/"
-
+PT_HOME_URL = get_market_home_url("olx_pt")
+PT_ACCOUNT_URL = get_market_account_url("olx_pt")
 
 @asynccontextmanager
 async def open_olx_browser_context(

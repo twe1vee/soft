@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+
+def get_dialog_pack(market_code: str = "olx_pt") -> dict:
+    normalized = (market_code or "olx_pt").strip().lower()
+
+    packs = {
+        "olx_pt": {
+            "dialogs_url_suffix": "?my_ads=0",
+            "ready_selectors": [
+                '[data-cy="chat-list"]',
+                '[data-testid="chat-list"]',
+                '[data-cy="chat-item"]',
+                '[data-testid="chat-item"]',
+                'a[href*="/d/oferta/"]',
+                'a[href*="/d/anuncio/"]',
+                'a[href*="/myaccount/answers/"]',
+                "main",
+            ],
+            "empty_state_selectors": [
+                '[data-cy="empty-state"]',
+                '[data-testid="empty-state"]',
+                'text=/sem mensagens/i',
+                'text=/nenhuma mensagem/i',
+                'text=/ainda não tens mensagens/i',
+                'text=/não tem mensagens/i',
+            ],
+            "login_hint_selectors": [
+                'input[name="email"]',
+                'input[type="email"]',
+                'input[name="username"]',
+                'input[name="password"]',
+                'form[action*="login"]',
+                'text=/iniciar sessão/i',
+                'text=/inicia sessão/i',
+                'text=/login/i',
+            ],
+            "block_selectors": [
+                'text=/attention required/i',
+                'text=/sorry, you have been blocked/i',
+                'text=/cloudflare/i',
+                'text=/cloudfront/i',
+                'text=/request blocked/i',
+                'text=/access denied/i',
+            ],
+            "overlay_selectors": [
+                'button[aria-label="Fechar"]',
+                'button[aria-label="Close"]',
+                'button[data-cy="close-button"]',
+                'button[data-testid="close-button"]',
+                '[data-cy="modal"] button',
+                '[role="dialog"] button',
+                '[data-testid="dialog"] button',
+                'button:has-text("Fechar")',
+                'button:has-text("Aceitar")',
+                'button:has-text("Accept")',
+                'button:has-text("Continuar")',
+                'button:has-text("Entendi")',
+                'button:has-text("OK")',
+            ],
+        },
+        "olx_pl": {
+            "dialogs_url_suffix": "?my_ads=0",
+            "ready_selectors": [
+                '[data-cy="chat-list"]',
+                '[data-testid="chat-list"]',
+                '[data-cy="chat-item"]',
+                '[data-testid="chat-item"]',
+                'a[href*="/d/oferta/"]',
+                'a[href*="/d/ogloszenie/"]',
+                'a[href*="/myaccount/answers/"]',
+                "main",
+            ],
+            "empty_state_selectors": [
+                '[data-cy="empty-state"]',
+                '[data-testid="empty-state"]',
+                'text=/brak wiadomości/i',
+                'text=/nie masz jeszcze wiadomości/i',
+            ],
+            "login_hint_selectors": [
+                'input[name="email"]',
+                'input[type="email"]',
+                'input[name="username"]',
+                'input[name="password"]',
+                'form[action*="login"]',
+                'text=/zaloguj/i',
+                'text=/logowanie/i',
+            ],
+            "block_selectors": [
+                'text=/attention required/i',
+                'text=/sorry, you have been blocked/i',
+                'text=/cloudflare/i',
+                'text=/cloudfront/i',
+                'text=/request blocked/i',
+                'text=/access denied/i',
+            ],
+            "overlay_selectors": [
+                'button[aria-label="Zamknij"]',
+                'button[aria-label="Close"]',
+                'button[data-cy="close-button"]',
+                'button[data-testid="close-button"]',
+                '[data-cy="modal"] button',
+                '[role="dialog"] button',
+                '[data-testid="dialog"] button',
+                'button:has-text("Zamknij")',
+                'button:has-text("Akceptuj")',
+                'button:has-text("Accept")',
+                'button:has-text("Kontynuuj")',
+                'button:has-text("OK")',
+            ],
+        },
+    }
+
+    return packs.get(normalized, packs["olx_pt"])
