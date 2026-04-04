@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from olx.markets.message_helpers import (
+    get_button_texts,
+    get_delivery_failed_texts,
+)
 from olx.message_sender_chat import has_chat_root
 from olx.message_sender_debug import normalize_text
 from olx.message_sender_page import page_body_text
 
 
-SEND_BUTTON_TEXTS = [
-    "Enviar mensagem",
-    "Wyślij",
-    "Отправить",
-    "Send",
-    "Enviar",
-]
+DEFAULT_MESSAGE_MARKET = "olx_pt"
 
 STRICT_SEND_BUTTON_SELECTORS = [
     '[data-testid="chat-form-container"] button[aria-label="Submit message"][type="submit"]',
@@ -27,21 +25,61 @@ MESSAGE_SURFACE_SELECTORS = [
     '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
 ]
 
-FAILED_MESSAGE_HINTS = [
-    "Não podes enviar esta mensagem",
-    "Clica para tentar de novo",
-    "Tenta de novo",
-    "Não foi possível enviar",
-    "Mensagem não enviada",
-]
 
-FAILED_MESSAGE_SELECTORS = [
-    'text=Não podes enviar esta mensagem',
-    'text=Clica para tentar de novo',
-    'text=Tenta de novo',
-    'text=Não foi possível enviar',
-    'text=Mensagem não enviada',
-]
+def _build_send_button_texts(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
+    values = []
+    seen = set()
+
+    defaults = [
+        "Enviar mensagem",
+        "Wyślij",
+        "Отправить",
+        "Send",
+        "Enviar",
+    ]
+    packed = get_button_texts("send", market_code)
+
+    for item in [*packed, *defaults]:
+        text = (item or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        values.append(text)
+
+    return values
+
+
+def _build_failed_message_hints(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
+    values = []
+    seen = set()
+
+    defaults = [
+        "Não podes enviar esta mensagem",
+        "Clica para tentar de novo",
+        "Tenta de novo",
+        "Não foi possível enviar",
+        "Mensagem não enviada",
+    ]
+    packed = get_delivery_failed_texts(market_code)
+
+    for item in [*packed, *defaults]:
+        text = (item or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        values.append(text)
+
+    return values
+
+
+def _build_failed_message_selectors(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
+    return [f"text={item}" for item in _build_failed_message_hints(market_code)]
 
 
 async def fill_message_input(locator, message_text: str) -> None:
@@ -107,7 +145,12 @@ async def _is_clickable_send_button(locator) -> bool:
     return True
 
 
-async def click_send_button(page, input_locator) -> bool:
+async def click_send_button(
+    page,
+    input_locator,
+    *,
+    market_code: str = DEFAULT_MESSAGE_MARKET,
+) -> bool:
     for selector in STRICT_SEND_BUTTON_SELECTORS:
         locator = page.locator(selector).first
 
@@ -149,7 +192,7 @@ async def click_send_button(page, input_locator) -> bool:
             continue
 
     fallback_candidates = []
-    for text in SEND_BUTTON_TEXTS:
+    for text in _build_send_button_texts(market_code):
         fallback_candidates.extend(
             [
                 page.get_by_role("button", name=text),
@@ -246,13 +289,20 @@ async def read_input_value(locator) -> str:
     return ""
 
 
-async def detect_failed_message_state(page) -> dict[str, Any]:
+async def detect_failed_message_state(
+    page,
+    *,
+    market_code: str = DEFAULT_MESSAGE_MARKET,
+) -> dict[str, Any]:
     data: dict[str, Any] = {
         "failed_message_detected": False,
         "failed_message_reason": None,
     }
 
-    for selector in FAILED_MESSAGE_SELECTORS:
+    failed_selectors = _build_failed_message_selectors(market_code)
+    failed_hints = _build_failed_message_hints(market_code)
+
+    for selector in failed_selectors:
         try:
             locator = page.locator(selector).first
             if await locator.count() == 0:
@@ -268,7 +318,7 @@ async def detect_failed_message_state(page) -> dict[str, Any]:
         body_text = await page_body_text(page)
         body_text_lower = (body_text or "").lower()
 
-        for hint in FAILED_MESSAGE_HINTS:
+        for hint in failed_hints:
             if hint.lower() in body_text_lower:
                 data["failed_message_detected"] = True
                 data["failed_message_reason"] = hint
@@ -279,7 +329,13 @@ async def detect_failed_message_state(page) -> dict[str, Any]:
     return data
 
 
-async def verify_message_sent(page, input_locator, message_text: str) -> dict[str, Any]:
+async def verify_message_sent(
+    page,
+    input_locator,
+    message_text: str,
+    *,
+    market_code: str = DEFAULT_MESSAGE_MARKET,
+) -> dict[str, Any]:
     target_text = normalize_text(message_text)
 
     verification: dict[str, Any] = {
@@ -296,6 +352,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
         "post_send_sent_message_found": False,
         "failed_message_detected": False,
         "failed_message_reason": None,
+        "market_code": market_code,
     }
 
     for _ in range(10):
@@ -327,7 +384,7 @@ async def verify_message_sent(page, input_locator, message_text: str) -> dict[st
             verification["post_send_body_has_text"] = False
 
         try:
-            failed_info = await detect_failed_message_state(page)
+            failed_info = await detect_failed_message_state(page, market_code=market_code)
             verification["failed_message_detected"] = failed_info["failed_message_detected"]
             verification["failed_message_reason"] = failed_info["failed_message_reason"]
         except Exception:

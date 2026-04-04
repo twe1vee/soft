@@ -1,19 +1,55 @@
 from __future__ import annotations
 
+from olx.markets.message_helpers import get_login_texts
 from olx.message_sender_debug import normalize_text
 
-LOGIN_HINT_SELECTORS = [
-    'a[href*="login"]',
-    'button:has-text("Entrar")',
-    'button:has-text("Iniciar sessão")',
-    'text=Entrar',
-    'text=Iniciar sessão',
-]
 
-SOFT_ERROR_TEXTS = [
-    "Ups, algo não está bem",
-    "Atualiza esta página ou volta à página principal",
-]
+DEFAULT_PAGE_MARKET = "olx_pt"
+
+
+def _build_login_hint_selectors(market_code: str = DEFAULT_PAGE_MARKET) -> list[str]:
+    values: list[str] = [
+        'a[href*="login"]',
+        'form[action*="login"]',
+        'input[type="password"]',
+    ]
+
+    seen = set(values)
+    for text in get_login_texts(market_code):
+        escaped = text.replace('"', '\\"')
+        candidates = [
+            f'button:has-text("{escaped}")',
+            f'a:has-text("{escaped}")',
+            f'text={text}',
+        ]
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                values.append(item)
+
+    return values
+
+
+def _build_soft_error_texts(market_code: str = DEFAULT_PAGE_MARKET) -> list[str]:
+    defaults = {
+        "olx_pt": [
+            "Ups, algo não está bem",
+            "Atualiza esta página ou volta à página principal",
+        ],
+        "olx_pl": [
+            "Ups, coś poszło nie tak",
+            "Odśwież stronę lub wróć do strony głównej",
+        ],
+    }
+    return defaults.get(market_code, defaults["olx_pt"])
+
+
+def _build_refresh_button_texts(market_code: str = DEFAULT_PAGE_MARKET) -> list[str]:
+    defaults = {
+        "olx_pt": ["Atualizar"],
+        "olx_pl": ["Odśwież"],
+    }
+    return defaults.get(market_code, defaults["olx_pt"])
 
 
 async def page_body_text(page) -> str:
@@ -48,16 +84,26 @@ async def is_cloudfront_block_page(page) -> bool:
     return any(marker in haystack for marker in markers)
 
 
-async def handle_olx_soft_error_page(page) -> bool:
+async def handle_olx_soft_error_page(
+    page,
+    *,
+    market_code: str = DEFAULT_PAGE_MARKET,
+) -> bool:
     body_text = await page_body_text(page)
-    if not any(text.lower() in body_text.lower() for text in SOFT_ERROR_TEXTS):
+    soft_error_texts = _build_soft_error_texts(market_code)
+
+    if not any(text.lower() in body_text.lower() for text in soft_error_texts):
         return False
 
-    candidates = [
-        page.get_by_role("button", name="Atualizar").first,
-        page.locator("button:has-text('Atualizar')").first,
-        page.locator("text=Atualizar").first,
-    ]
+    candidates = []
+    for text in _build_refresh_button_texts(market_code):
+        candidates.extend(
+            [
+                page.get_by_role("button", name=text).first,
+                page.locator(f'button:has-text("{text}")').first,
+                page.locator(f"text={text}").first,
+            ]
+        )
 
     for locator in candidates:
         try:
@@ -86,8 +132,12 @@ async def handle_olx_soft_error_page(page) -> bool:
     return True
 
 
-async def has_login_hint(page) -> bool:
-    for selector in LOGIN_HINT_SELECTORS:
+async def has_login_hint(
+    page,
+    *,
+    market_code: str = DEFAULT_PAGE_MARKET,
+) -> bool:
+    for selector in _build_login_hint_selectors(market_code):
         try:
             locator = page.locator(selector).first
             if await locator.count() == 0:

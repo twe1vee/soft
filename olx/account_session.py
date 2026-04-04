@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from olx.browser_session import (
-    PT_HOME_URL,
     dismiss_cookie_banner_if_present,
     open_olx_browser_context,
+)
+from olx.markets.helpers import (
+    extract_url_domain,
+    get_market_account_url,
+    get_market_home_url,
+    is_market_domain,
 )
 from olx.message_sender_page import is_cloudfront_block_page
 
 
-MY_ACCOUNT_URL = "https://www.olx.pt/myaccount/"
+DEFAULT_ACCOUNT_MARKET = "olx_pt"
 
 
 def _classify_account_error(error_text: str) -> tuple[str, str]:
@@ -66,6 +69,7 @@ def _looks_like_logged_in_by_url(url: str | None) -> bool:
         "/ads",
         "/favoritos",
         "/messages",
+        "/mojekonto",
     ]
     return any(marker in value for marker in positive_markers)
 
@@ -82,6 +86,7 @@ async def _has_login_indicators(page) -> bool:
         'text=Entrar',
         'text=Login',
         'text=Sign in',
+        'text=Zaloguj',
     ]
 
     for selector in selectors:
@@ -106,6 +111,8 @@ async def _has_login_indicators(page) -> bool:
         "login",
         "continuar com google",
         "continuar com facebook",
+        "zaloguj",
+        "logowanie",
     ]
     return any(marker in body_text for marker in login_markers)
 
@@ -120,6 +127,7 @@ async def _has_logged_in_indicators(page) -> bool:
         'a[href*="/conta"]',
         'a[href*="/messages"]',
         'a[href*="/favorites"]',
+        'a[href*="/mojekonto"]',
         'button[aria-label*="account" i]',
         'button[aria-label*="profile" i]',
         'img[alt*="avatar" i]',
@@ -157,18 +165,25 @@ async def _has_logged_in_indicators(page) -> bool:
         "favoritos",
         "mensagens",
         "conta",
+        "moje konto",
+        "wiadomości",
     ]
     return any(marker in body_text for marker in positive_markers)
 
 
-async def _open_account_area_with_retry(page, attempts: int = 2) -> tuple[str | None, str | None, str | None]:
+async def _open_account_area_with_retry(
+    page,
+    *,
+    market_code: str = DEFAULT_ACCOUNT_MARKET,
+    attempts: int = 2,
+) -> tuple[str | None, str | None, str | None]:
     last_error: str | None = None
     last_title: str | None = None
     last_body: str | None = None
 
     urls_to_try = [
-        MY_ACCOUNT_URL,
-        PT_HOME_URL,
+        get_market_account_url(market_code),
+        get_market_home_url(market_code),
     ]
 
     for attempt in range(1, attempts + 1):
@@ -223,6 +238,7 @@ async def check_account_alive(
     user_id: int | None = None,
     account_id: int | None = None,
     olx_profile_name: str | None = None,
+    market_code: str = DEFAULT_ACCOUNT_MARKET,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": False,
@@ -239,6 +255,7 @@ async def check_account_alive(
         "debug_login_detected": False,
         "debug_logged_in_detected": False,
         "debug_logged_in_by_url": False,
+        "market_code": market_code,
     }
 
     try:
@@ -258,7 +275,11 @@ async def check_account_alive(
             page = await context.new_page()
 
             result["attempts_used"] = 2
-            final_url, page_title, body_text = await _open_account_area_with_retry(page, attempts=2)
+            final_url, page_title, body_text = await _open_account_area_with_retry(
+                page,
+                market_code=market_code,
+                attempts=2,
+            )
 
             result["final_url"] = final_url
             result["page_title"] = page_title
@@ -288,7 +309,7 @@ async def check_account_alive(
                 result["error"] = None
                 return result
 
-            if final_url and "olx.pt" in final_url:
+            if final_url and is_market_domain(extract_url_domain(final_url), market_code):
                 result["status"] = "unstable"
                 result["error"] = "OLX открылся, но аккаунт подтвердился неуверенно"
                 return result

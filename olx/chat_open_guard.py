@@ -18,6 +18,8 @@ from olx.message_sender_page import (
     is_cloudfront_block_page,
 )
 
+DEFAULT_GUARD_MARKET = "olx_pt"
+
 
 async def _sleep(page, ms: int) -> None:
     try:
@@ -69,10 +71,15 @@ def _finalize_guard_status(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-async def _collect_guard_debug(page, result: dict[str, Any]) -> None:
+async def _collect_guard_debug(
+    page,
+    result: dict[str, Any],
+    *,
+    market_code: str = DEFAULT_GUARD_MARKET,
+) -> None:
     diag = await collect_chat_diagnostics(page)
     result.update(diag)
-    result["debug_login_hint_found"] = await has_login_hint(page)
+    result["debug_login_hint_found"] = await has_login_hint(page, market_code=market_code)
     result["debug_blocking_chat_gate_found"] = await has_blocking_chat_gate(page)
     result["debug_chat_root_found"] = bool(
         result.get("debug_chat_root_found") or await has_chat_root(page)
@@ -84,6 +91,7 @@ async def _try_open_once(
     page,
     *,
     settle_ms: int = 700,
+    market_code: str = DEFAULT_GUARD_MARKET,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "input_locator": None,
@@ -111,7 +119,7 @@ async def _try_open_once(
 
     if clicked:
         await wait_for_chat_mount(page)
-        await dismiss_dialogs_overlays_if_present(page)
+        await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
         await _sleep(page, settle_ms)
         input_locator = await find_message_input(page)
         if input_locator is not None:
@@ -130,7 +138,7 @@ async def _try_open_once(
 
     if clicked_retry:
         await wait_for_chat_mount(page)
-        await dismiss_dialogs_overlays_if_present(page)
+        await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
         await _sleep(page, settle_ms)
         input_locator = await find_message_input(page)
         if input_locator is not None:
@@ -146,29 +154,18 @@ async def ensure_chat_open(
     target_url: str | None = None,
     allow_reload: bool = True,
     settle_ms: int = 700,
+    market_code: str = DEFAULT_GUARD_MARKET,
 ) -> dict[str, Any]:
-    """
-    Возвращает dict с:
-      - ok
-      - status_hint: chat_ready / cloudfront_blocked / login_required_or_chat_blocked / message_input_not_found
-      - input_locator
-      - recovered_by_reload
-      - message_button_clicked / retry debug
-      - debug_* diagnostics
-      - cloudfront_blocked
-      - handled_soft_error_page
-    """
-
     result = _build_guard_result()
 
-    await dismiss_dialogs_overlays_if_present(page)
+    await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
     await _sleep(page, 250)
 
-    attempt1 = await _try_open_once(page, settle_ms=settle_ms)
+    attempt1 = await _try_open_once(page, settle_ms=settle_ms, market_code=market_code)
     result.update({k: v for k, v in attempt1.items() if k != "input_locator"})
     result["input_locator"] = attempt1.get("input_locator")
 
-    await _collect_guard_debug(page, result)
+    await _collect_guard_debug(page, result, market_code=market_code)
 
     if result["input_locator"] is not None:
         return _finalize_guard_status(result)
@@ -193,19 +190,19 @@ async def ensure_chat_open(
 
     await _sleep(page, 1400)
 
-    handled_soft_error = await handle_olx_soft_error_page(page)
+    handled_soft_error = await handle_olx_soft_error_page(page, market_code=market_code)
     result["handled_soft_error_page"] = bool(
         result["handled_soft_error_page"] or handled_soft_error
     )
 
-    await dismiss_dialogs_overlays_if_present(page)
+    await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
     await _sleep(page, 400)
 
     if await is_cloudfront_block_page(page):
         result["cloudfront_blocked"] = True
         return _finalize_guard_status(result)
 
-    attempt2 = await _try_open_once(page, settle_ms=settle_ms)
+    attempt2 = await _try_open_once(page, settle_ms=settle_ms, market_code=market_code)
     result["recovered_by_reload"] = True
     result["input_locator"] = attempt2.get("input_locator")
 
@@ -215,5 +212,5 @@ async def ensure_chat_open(
         if value is not None:
             result[key] = value
 
-    await _collect_guard_debug(page, result)
+    await _collect_guard_debug(page, result, market_code=market_code)
     return _finalize_guard_status(result)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from olx.markets.helpers import get_market_dialogs_url
+
 LIST_ROW_SELECTORS = [
     '[data-testid^="conversations-list-item-"]',
     '[data-testid*="conversations-list-item"]',
@@ -14,6 +16,8 @@ NAME_SELECTOR = '[data-testid="list-item-user-name"]'
 TITLE_SELECTOR = '[data-testid="list-item-context-title"]'
 MESSAGE_SELECTOR = '[data-testid="list-item-message-text"]'
 DATETIME_SELECTOR = '[data-testid="list-item-datetime"]'
+
+DEFAULT_DIALOGS_MARKET = "olx_pt"
 
 
 def _norm(value: Any) -> str:
@@ -81,7 +85,7 @@ async def _pick_rows(page):
 async def _extract_conversation_id(row) -> str | None:
     testid = _norm(await _safe_attr(row, "data-testid"))
     if testid:
-        m = re.search(r"conversations-list-item-([A-Za-z0-9\-]+)$", testid)
+        m = re.search(r"conversations-list-item-([A-Za-z0-9\\-]+)$", testid)
         if m:
             return m.group(1)
 
@@ -90,7 +94,7 @@ async def _extract_conversation_id(row) -> str | None:
         href = _norm(await _safe_attr(row.locator("a").first, "href"))
 
     if href:
-        m = re.search(r"/myaccount/answer[s]?/([A-Za-z0-9\-]+)/?", href)
+        m = re.search(r"/myaccount/answer[s]?/([A-Za-z0-9\\-]+)/?", href)
         if m:
             return m.group(1)
 
@@ -98,13 +102,6 @@ async def _extract_conversation_id(row) -> str | None:
 
 
 async def _is_outgoing_by_icon(row) -> bool:
-    """
-    Считаем сообщение исходящим только если иконка галочек находится
-    максимально близко к preview последнего сообщения.
-
-    Не берем любые svg из широких ancestor-контейнеров строки, потому что
-    из-за этого unread-входящие тоже начинают считаться outgoing.
-    """
     try:
         message_el = row.locator(MESSAGE_SELECTOR).first
         if await _safe_count(message_el) <= 0:
@@ -112,7 +109,6 @@ async def _is_outgoing_by_icon(row) -> bool:
     except Exception:
         return False
 
-    # 1) Самый надежный кейс: svg среди прямых соседей preview
     try:
         preceding_svg = message_el.locator('xpath=preceding-sibling::*[name()="svg"]')
         if await _safe_count(preceding_svg) > 0:
@@ -127,8 +123,6 @@ async def _is_outgoing_by_icon(row) -> bool:
     except Exception:
         pass
 
-    # 2) Иконка внутри ближайшего родителя preview, но только если там мало svg
-    # и они локальны для блока сообщения, а не для всей строки диалога.
     try:
         parent = message_el.locator("xpath=ancestor::*[1]").first
         if await _safe_count(parent) > 0:
@@ -138,7 +132,6 @@ async def _is_outgoing_by_icon(row) -> bool:
     except Exception:
         pass
 
-    # 3) Очень узкий wrapper вокруг message-text
     try:
         wrappers = row.locator(
             'xpath=.//*[contains(@data-testid,"list-item-message-text")]/ancestor::*[count(.//svg) > 0][1]'
@@ -147,7 +140,6 @@ async def _is_outgoing_by_icon(row) -> bool:
             wrapper = wrappers.first
             svg_count = await _safe_count(wrapper.locator("svg"))
 
-            # Берем только маленький локальный контейнер, а не широкий блок строки
             text_preview = await _safe_inner_text(message_el, timeout_ms=600)
             wrapper_text = await _safe_inner_text(wrapper, timeout_ms=600)
 
@@ -163,10 +155,8 @@ async def _is_outgoing_by_icon(row) -> bool:
 
     return False
 
+
 async def _is_unread_by_section(row) -> bool:
-    """
-    Пытаемся понять, находится ли строка в секции NÃO LIDAS / unread.
-    """
     try:
         unread_title = row.locator(
             'xpath=preceding::*[@data-testid="unread-section-title"][1]'
@@ -203,7 +193,19 @@ async def _is_unread_by_section(row) -> bool:
     return False
 
 
-async def _parse_single_row(row) -> dict[str, Any] | None:
+def _build_conversation_url(
+    conversation_id: str,
+    market_code: str = DEFAULT_DIALOGS_MARKET,
+) -> str:
+    base_dialogs_url = get_market_dialogs_url(market_code).rstrip("/")
+    return f"{base_dialogs_url.rstrip('s')}/{conversation_id}/?my_ads=0"
+
+
+async def _parse_single_row(
+    row,
+    *,
+    market_code: str = DEFAULT_DIALOGS_MARKET,
+) -> dict[str, Any] | None:
     conversation_id = await _extract_conversation_id(row)
     if not conversation_id:
         print("[dialogs_parser] row_skip no conversation_id")
@@ -229,7 +231,7 @@ async def _parse_single_row(row) -> dict[str, Any] | None:
         direction_guess = "unknown"
 
     conversation_key = conversation_id
-    conversation_url = f"https://www.olx.pt/myaccount/answer/{conversation_id}/?my_ads=0"
+    conversation_url = _build_conversation_url(conversation_id, market_code)
 
     return {
         "conversation_key": conversation_key,
@@ -242,10 +244,15 @@ async def _parse_single_row(row) -> dict[str, Any] | None:
         "updated_hint": updated_hint or None,
         "is_unread": is_unread,
         "last_message_direction_guess": direction_guess,
+        "market_code": market_code,
     }
 
 
-async def parse_dialogs_page(page) -> list[dict[str, Any]]:
+async def parse_dialogs_page(
+    page,
+    *,
+    market_code: str = DEFAULT_DIALOGS_MARKET,
+) -> list[dict[str, Any]]:
     locator, selector, count = await _pick_rows(page)
 
     if locator is None or count <= 0:
@@ -258,7 +265,7 @@ async def parse_dialogs_page(page) -> list[dict[str, Any]]:
     for i in range(count):
         try:
             row = locator.nth(i)
-            item = await _parse_single_row(row)
+            item = await _parse_single_row(row, market_code=market_code)
         except Exception as exc:
             print(f"[dialogs_parser] row_failed index={i} error={exc!r}")
             continue
@@ -283,7 +290,8 @@ async def parse_dialogs_page(page) -> list[dict[str, Any]]:
             f"msg={item.get('last_message_text')} "
             f"time={item.get('updated_hint')} "
             f"is_unread={item.get('is_unread')} "
-            f"direction={item.get('last_message_direction_guess')}"
+            f"direction={item.get('last_message_direction_guess')} "
+            f"market={item.get('market_code')}"
         )
 
     print(f"[dialogs_parser] parsed_total={len(parsed)} selector={selector}")

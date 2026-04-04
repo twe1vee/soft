@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from typing import Any
-from olx.markets.helpers import get_market_dialogs_url
 
 from db import (
     create_conversation_message,
@@ -15,6 +15,7 @@ from jobs.action_retry_policy import get_retry_decision
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
 from olx.chat_open_guard import ensure_chat_open
 from olx.dialogs_page import dismiss_dialogs_overlays_if_present
+from olx.markets.helpers import get_market_dialogs_url
 from olx.message_sender_chat import collect_chat_diagnostics
 from olx.message_sender_debug import base_result, safe_locator_text
 from olx.message_sender_page import (
@@ -28,14 +29,13 @@ from olx.message_sender_submit import (
 )
 
 DEFAULT_REPLY_MAX_ATTEMPTS = 2
+DEFAULT_REPLY_MARKET = "olx_pt"
 
 
 def _build_outgoing_message_key(
     conversation_id: int,
     text: str,
 ) -> str:
-    import hashlib
-
     stable = f"{conversation_id}|outgoing|{(text or '').strip()}"
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
@@ -110,6 +110,7 @@ async def _send_reply_once(
     account_id: int,
     message_text: str,
     headless: bool = True,
+    market_code: str = DEFAULT_REPLY_MARKET,
 ) -> dict[str, Any]:
     result = base_result()
     result["conversation_id"] = conversation_id
@@ -123,6 +124,7 @@ async def _send_reply_once(
     result["send_button_found"] = False
     result["recovered_by_reload"] = False
     result["status_hint"] = None
+    result["market_code"] = market_code
 
     if not (message_text or "").strip():
         result["status"] = "invalid_input"
@@ -162,7 +164,7 @@ async def _send_reply_once(
     target_url = (
         conversation.get("conversation_url")
         or conversation.get("ad_url")
-        or get_market_dialogs_url("olx_pt")
+        or get_market_dialogs_url(market_code)
     )
     result["target_url"] = target_url
 
@@ -205,10 +207,13 @@ async def _send_reply_once(
             result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
             return result
 
-        handled_soft_error = await handle_olx_soft_error_page(page)
+        handled_soft_error = await handle_olx_soft_error_page(
+            page,
+            market_code=market_code,
+        )
         result["handled_soft_error_page"] = handled_soft_error
 
-        await dismiss_dialogs_overlays_if_present(page)
+        await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
         await page.wait_for_timeout(1200)
 
         if handled_soft_error:
@@ -226,6 +231,7 @@ async def _send_reply_once(
             target_url=target_url,
             allow_reload=True,
             settle_ms=700,
+            market_code=market_code,
         )
         input_locator = _apply_chat_open_result(result, chat_open)
 
@@ -253,7 +259,11 @@ async def _send_reply_once(
             result["submit_button_visible_before_click"] = None
             result["submit_button_text_before_click"] = None
 
-        send_clicked = await click_send_button(page, input_locator)
+        send_clicked = await click_send_button(
+            page,
+            input_locator,
+            market_code=market_code,
+        )
         result["send_button_found"] = send_clicked
 
         try:
@@ -273,7 +283,12 @@ async def _send_reply_once(
 
         await page.wait_for_timeout(1800)
 
-        verification = await verify_message_sent(page, input_locator, message_text)
+        verification = await verify_message_sent(
+            page,
+            input_locator,
+            message_text,
+            market_code=market_code,
+        )
         result.update(verification)
         result["final_url"] = page.url
         result.update(await collect_chat_diagnostics(page))
@@ -305,6 +320,11 @@ async def _send_reply_once(
             result["sent"] = True
             return result
 
+        if verification.get("delivery_failed"):
+            result["status"] = "delivery_failed"
+            result["error"] = verification.get("delivery_failed_reason") or "Сообщение не доставлено"
+            return result
+
         result["status"] = "send_clicked_unverified"
         result["error"] = "Кнопка отправки нажата, но подтверждение отправки не получено"
         return result
@@ -327,6 +347,7 @@ async def send_reply_to_conversation(
     message_text: str,
     headless: bool = True,
     max_attempts: int = DEFAULT_REPLY_MAX_ATTEMPTS,
+    market_code: str = DEFAULT_REPLY_MARKET,
 ) -> dict[str, Any]:
     first_result = await _send_reply_once(
         user_id=user_id,
@@ -334,6 +355,7 @@ async def send_reply_to_conversation(
         account_id=account_id,
         message_text=message_text,
         headless=headless,
+        market_code=market_code,
     )
 
     first_status = first_result.get("status") or "unknown"
@@ -349,6 +371,7 @@ async def send_reply_to_conversation(
         first_result["retry_used"] = False
         first_result["attempt"] = 1
         first_result["max_attempts"] = max(1, int(max_attempts))
+        first_result["market_code"] = market_code
         if retry_decision.reason:
             first_result["retry_reason"] = retry_decision.reason
         return first_result
@@ -363,6 +386,7 @@ async def send_reply_to_conversation(
         account_id=account_id,
         message_text=message_text,
         headless=headless,
+        market_code=market_code,
     )
 
     second_result["retry_used"] = True
@@ -370,4 +394,5 @@ async def send_reply_to_conversation(
     second_result["retry_reason"] = retry_decision.reason
     second_result["attempt"] = 2
     second_result["max_attempts"] = max(1, int(max_attempts))
+    second_result["market_code"] = market_code
     return second_result
