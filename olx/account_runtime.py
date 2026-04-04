@@ -3,6 +3,11 @@ from db.accounts import touch_account_last_used
 import asyncio
 import contextlib
 import time
+from olx.runtime_rate_limit import (
+    clear_runtime_open_failure,
+    mark_runtime_open_failed,
+    wait_runtime_start_slot,
+)
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +109,8 @@ async def get_account_runtime(
             entry.touch()
             return entry
 
+        await wait_runtime_start_slot(account_id)
+
         if entry.manager is not None:
             _runtime_debug(f"stale_before_reopen account_id={account_id}")
             await _close_entry(entry, reason="stale_before_reopen", remove_from_registry=False)
@@ -117,7 +124,16 @@ async def get_account_runtime(
             olx_profile_name=olx_profile_name,
         )
 
-        browser, context, runtime = await manager.__aenter__()
+        try:
+            browser, context, runtime = await manager.__aenter__()
+        except Exception as exc:
+            mark_runtime_open_failed(account_id)
+            _runtime_debug(
+                f"runtime_open_failed account_id={account_id} error={exc}"
+            )
+            raise
+        else:
+            clear_runtime_open_failure(account_id)
 
         entry.manager = manager
         entry.browser = browser
@@ -140,7 +156,6 @@ async def get_account_runtime(
 
         entry.touch()
         return entry
-
 
 async def open_account_runtime_page(
     *,

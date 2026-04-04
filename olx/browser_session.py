@@ -29,8 +29,8 @@ async def open_olx_browser_context(
         user_id=user_id,
         account_id=account_id,
         olx_profile_name=olx_profile_name,
-    ) as session:
-        yield session
+    ) as payload:
+        yield payload
 
 
 async def open_olx_page(

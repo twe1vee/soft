@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from db import (
@@ -9,6 +10,7 @@ from db import (
     get_proxy_by_id,
     update_conversation_last_preview,
 )
+from jobs.action_retry_policy import get_retry_decision
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
 from olx.chat_open_guard import ensure_chat_open
 from olx.dialogs_page import dismiss_dialogs_overlays_if_present
@@ -23,6 +25,8 @@ from olx.message_sender_submit import (
     fill_message_input,
     verify_message_sent,
 )
+
+DEFAULT_REPLY_MAX_ATTEMPTS = 2
 
 
 def _build_outgoing_message_key(
@@ -98,7 +102,7 @@ def _apply_chat_open_failure(
     return False
 
 
-async def send_reply_to_conversation(
+async def _send_reply_once(
     *,
     user_id: int,
     conversation_id: int,
@@ -312,3 +316,57 @@ async def send_reply_to_conversation(
     finally:
         if runtime_entry is not None:
             await close_runtime_page(runtime_entry, page)
+
+
+async def send_reply_to_conversation(
+    *,
+    user_id: int,
+    conversation_id: int,
+    account_id: int,
+    message_text: str,
+    headless: bool = True,
+    max_attempts: int = DEFAULT_REPLY_MAX_ATTEMPTS,
+) -> dict[str, Any]:
+    first_result = await _send_reply_once(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        account_id=account_id,
+        message_text=message_text,
+        headless=headless,
+    )
+
+    first_status = first_result.get("status") or "unknown"
+
+    retry_decision = get_retry_decision(
+        action_type="reply",
+        status=first_status,
+        attempt=1,
+        max_attempts=max(1, int(max_attempts)),
+    )
+
+    if not retry_decision.should_retry:
+        first_result["retry_used"] = False
+        first_result["attempt"] = 1
+        first_result["max_attempts"] = max(1, int(max_attempts))
+        if retry_decision.reason:
+            first_result["retry_reason"] = retry_decision.reason
+        return first_result
+
+    delay_seconds = float(retry_decision.delay_seconds or 0)
+    if delay_seconds > 0:
+        await asyncio.sleep(delay_seconds)
+
+    second_result = await _send_reply_once(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        account_id=account_id,
+        message_text=message_text,
+        headless=headless,
+    )
+
+    second_result["retry_used"] = True
+    second_result["first_try_status"] = first_status
+    second_result["retry_reason"] = retry_decision.reason
+    second_result["attempt"] = 2
+    second_result["max_attempts"] = max(1, int(max_attempts))
+    return second_result

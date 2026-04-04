@@ -21,6 +21,7 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
+from jobs.action_retry_policy import get_retry_decision
 from jobs.send_outcome import (
     build_ad_failure_status,
     build_message_failure_status,
@@ -28,23 +29,17 @@ from jobs.send_outcome import (
     should_mark_proxy_failed,
 )
 from jobs.send_result_text import build_failure_result, build_send_result_text
-from jobs.send_retry_policy import (
-    map_send_status_to_account_status,
-    should_requeue_send_status,
-)
+from jobs.send_retry_policy import map_send_status_to_account_status
 from olx.message_sender import send_message_to_ad
 
 BOT_DATA_KEY = "send_jobs_manager"
 
-# Было 8..18, делаем мягче для лучшего throughput
 SEND_JITTER_MIN_SECONDS = 2
 SEND_JITTER_MAX_SECONDS = 6
 
-# Задержка перед повторной постановкой transient-задачи
 REQUEUE_RETRY_MIN_SECONDS = 3
 REQUEUE_RETRY_MAX_SECONDS = 6
 
-# Для текущего этапа достаточно 2 попыток: первая + 1 requeue retry
 DEFAULT_MAX_ATTEMPTS = 2
 
 
@@ -380,22 +375,27 @@ class SendJobsManager:
 
             update_proxy_last_check(job.user_id, proxy["id"])
 
-            if should_requeue_send_status(
-                send_status,
+            retry_decision = get_retry_decision(
+                action_type="send",
+                status=send_status,
                 attempt=job.attempt,
                 max_attempts=job.max_attempts,
-            ):
+            )
+
+            if retry_decision.should_retry:
                 update_account_status(job.user_id, job.account_id, "loading_retry")
                 result["account_status"] = "loading_retry"
                 result["first_try_status"] = send_status
                 result["retry_used"] = False
                 result["attempt"] = job.attempt
                 result["max_attempts"] = job.max_attempts
+                result["retry_reason"] = retry_decision.reason
 
-                delay_seconds = random.uniform(
+                delay_seconds = retry_decision.delay_seconds or random.uniform(
                     REQUEUE_RETRY_MIN_SECONDS,
                     REQUEUE_RETRY_MAX_SECONDS,
                 )
+
                 await self._requeue_job_later(
                     job,
                     delay_seconds=delay_seconds,

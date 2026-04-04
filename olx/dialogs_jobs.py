@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 
@@ -9,7 +10,7 @@ from db import (
     get_proxy_by_id,
     get_user_accounts,
 )
-from db.accounts import get_stale_user_inactive_accounts_with_profiles
+from db.accounts import get_stale_accounts_with_profiles
 from olx.account_runtime import close_account_runtime, close_idle_account_runtimes
 from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
@@ -251,23 +252,35 @@ async def _runtime_cleanup_job_callback(context) -> None:
 
 async def _gologin_profile_cleanup_job_callback(context) -> None:
     try:
-        stale_accounts = get_stale_user_inactive_accounts_with_profiles(
+        stale_accounts = get_stale_accounts_with_profiles(
             GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
         )
+
+        if stale_accounts:
+            print(
+                f"[gologin_cleanup] stale_accounts_found={len(stale_accounts)} "
+                f"idle_seconds={GOLOGIN_PROFILE_IDLE_DELETE_SECONDS}"
+            )
+        else:
+            print(
+                f"[gologin_cleanup] no stale accounts "
+                f"idle_seconds={GOLOGIN_PROFILE_IDLE_DELETE_SECONDS}"
+            )
 
         for item in stale_accounts:
             account_id = int(item["id"])
             closed = await close_account_runtime(
                 account_id,
-                reason="user_inactive_cleanup",
+                reason="stale_account_cleanup",
             )
             print(
                 f"[gologin_cleanup] preclose account_id={account_id} "
                 f"closed_runtime={closed}"
             )
 
-        result = cleanup_stale_gologin_profiles(
-            idle_seconds=GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
+        result = await asyncio.to_thread(
+            cleanup_stale_gologin_profiles,
+            idle_seconds=GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
         )
         print(
             f"[gologin_cleanup] found={result.get('found_count', 0)} "

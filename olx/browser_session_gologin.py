@@ -8,10 +8,10 @@ from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from db import clear_account_gologin_profile
 from olx.profile_manager_gologin import (
-    AccountRuntimeBlockedError,
     build_gologin_client,
     ensure_gologin_profile,
 )
+from olx.runtime_rate_limit import wait_gologin_stop_slot
 
 
 def _to_cdp_endpoint(debugger_address: str) -> str:
@@ -149,6 +149,7 @@ async def open_gologin_browser_context(
             pass
 
         try:
+            await wait_gologin_stop_slot()
             await asyncio.to_thread(gl.stop)
         except Exception:
             pass

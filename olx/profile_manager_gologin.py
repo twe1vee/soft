@@ -11,12 +11,16 @@ from db.accounts import (
     clear_account_gologin_profile,
     delete_account,
     get_account_by_id,
-    get_stale_user_inactive_accounts_with_profiles,
+    get_stale_accounts_with_profiles,
     touch_account_last_used,
     update_account_browser_engine,
     update_account_gologin_profile,
 )
 from olx.cookies import normalize_cookies
+from olx.runtime_rate_limit import (
+    wait_gologin_create_slot_sync,
+    wait_gologin_delete_slot_sync,
+)
 
 
 class AccountRuntimeBlockedError(RuntimeError):
@@ -198,6 +202,7 @@ def _build_profile_name(
 
 
 def create_profile(profile_name: str) -> str:
+    wait_gologin_create_slot_sync()
     gl = build_gologin_client(profile_id=None, headless=True)
     created = gl.createProfileRandomFingerprint(
         {
@@ -251,6 +256,8 @@ def delete_gologin_profiles(profile_ids: list[str]) -> None:
     cleaned = [str(x).strip() for x in profile_ids if str(x).strip()]
     if not cleaned:
         return
+
+    wait_gologin_delete_slot_sync()
 
     response = requests.delete(
         f"{GOLOGIN_API_BASE}/browser",
@@ -412,7 +419,7 @@ def cleanup_stale_gologin_profiles(
     *,
     idle_seconds: int = GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
 ) -> dict[str, Any]:
-    stale_accounts = get_stale_user_inactive_accounts_with_profiles(idle_seconds)
+    stale_accounts = get_stale_accounts_with_profiles(idle_seconds)
 
     deleted: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -434,7 +441,7 @@ def cleanup_stale_gologin_profiles(
                     "user_id": user_id,
                     "gologin_profile_id": profile_id or None,
                     "gologin_profile_name": item.get("gologin_profile_name"),
-                    "user_last_active_at": item.get("user_last_active_at"),
+                    "last_used_at": item.get("last_used_at"),
                 }
             )
         except Exception as exc:
@@ -443,6 +450,7 @@ def cleanup_stale_gologin_profiles(
                     "account_id": account_id,
                     "user_id": user_id,
                     "gologin_profile_id": profile_id or None,
+                    "last_used_at": item.get("last_used_at"),
                     "error": str(exc),
                 }
             )
