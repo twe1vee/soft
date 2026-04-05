@@ -1,23 +1,18 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-from typing import Any
+import time
 
-from db import (
-    create_conversation_message,
-    get_account_by_id,
-    get_conversation_by_id,
-    get_proxy_by_id,
-    update_conversation_last_preview,
-)
-from jobs.action_retry_policy import get_retry_decision
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
+from olx.browser_session import dismiss_cookie_banner_if_present
 from olx.chat_open_guard import ensure_chat_open
-from olx.dialogs_page import dismiss_dialogs_overlays_if_present
-from olx.markets.helpers import get_market_dialogs_url
 from olx.message_sender_chat import collect_chat_diagnostics
-from olx.message_sender_debug import base_result, safe_locator_text
+from olx.message_sender_debug import (
+    base_result,
+    safe_locator_text,
+    save_debug_artifacts,
+)
 from olx.message_sender_page import (
     handle_olx_soft_error_page,
     is_cloudfront_block_page,
@@ -28,162 +23,105 @@ from olx.message_sender_submit import (
     verify_message_sent,
 )
 
-DEFAULT_REPLY_MAX_ATTEMPTS = 2
-DEFAULT_REPLY_MARKET = "olx_pt"
+
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
 
 
-def _build_outgoing_message_key(
-    conversation_id: int,
-    text: str,
-) -> str:
-    stable = f"{conversation_id}|outgoing|{(text or '').strip()}"
-    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+async def _has_daily_limit_banner(page) -> bool:
+    phrases = [
+        "atingiste o limite de novas conversas por dia",
+        "limite de novas conversas por dia",
+        "limite de novas conversas",
+    ]
 
+    try:
+        body = await page.locator("body").inner_text(timeout=2000)
+    except Exception:
+        body = ""
 
-def _apply_chat_open_result(
-    result: dict[str, Any],
-    chat_open: dict[str, Any],
-) -> Any:
-    for key in (
-        "message_button_clicked",
-        "message_button_clicked_retry",
-        "chat_button_retry_debug",
-        "chat_button_still_visible_after_click",
-        "chat_button_text_after_click",
-        "chat_button_still_visible_after_retry",
-        "chat_button_text_after_retry",
-        "clicked_candidate",
-        "clicked_candidate_debug",
-        "click_mode",
-        "chat_button_candidates",
-        "recovered_by_reload",
-        "debug_login_hint_found",
-        "debug_blocking_chat_gate_found",
-        "debug_chat_root_found",
-        "debug_message_input_found",
-        "debug_message_input_tag",
-        "debug_message_input_placeholder",
-        "debug_message_input_name",
-        "handled_soft_error_page",
-        "cloudfront_blocked",
-        "status_hint",
-    ):
-        if key in chat_open:
-            result[key] = chat_open.get(key)
-
-    input_locator = chat_open.get("input_locator")
-    result["input_found"] = input_locator is not None
-    return input_locator
-
-
-def _apply_chat_open_failure(
-    result: dict[str, Any],
-    chat_open: dict[str, Any],
-) -> bool:
-    status_hint = chat_open.get("status_hint")
-
-    if status_hint == "cloudfront_blocked":
-        result["status"] = "cloudfront_blocked"
-        result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+    body_norm = (body or "").strip().lower()
+    if any(phrase in body_norm for phrase in phrases):
         return True
 
-    if status_hint == "login_required_or_chat_blocked":
-        result["status"] = "login_required_or_chat_blocked"
-        result["error"] = "Вместо поля ввода открылся логин/блокирующий интерфейс"
-        return True
-
-    if status_hint == "message_input_not_found":
-        result["status"] = "message_input_not_found"
-        result["error"] = (
-            "Не найдено поле ввода сообщения после retry открытия чата "
-            "и одного reload страницы"
-        )
-        return True
+    for phrase in phrases:
+        try:
+            locator = page.get_by_text(phrase, exact=False)
+            if await locator.count() > 0 and await locator.first.is_visible():
+                return True
+        except Exception:
+            continue
 
     return False
 
 
-async def _send_reply_once(
-    *,
-    user_id: int,
-    conversation_id: int,
-    account_id: int,
+async def send_message_to_ad(
+    cookies_json: str,
+    proxy_text: str,
+    ad_url: str,
     message_text: str,
+    *,
     headless: bool = True,
-    market_code: str = DEFAULT_REPLY_MARKET,
-) -> dict[str, Any]:
+    user_id: int | None = None,
+    account_id: int | None = None,
+    olx_profile_name: str | None = None,
+) -> dict:
     result = base_result()
-    result["conversation_id"] = conversation_id
-    result["account_id"] = account_id
+    result["ad_url"] = ad_url
     result["message_length"] = len(message_text or "")
     result["browser_engine"] = "gologin"
     result["gologin_profile_id"] = None
     result["gologin_profile_name"] = None
     result["debugger_address"] = None
+    result["message_button_clicked"] = False
+    result["message_button_clicked_retry"] = False
+    result["chat_button_retry_debug"] = None
+    result["chat_button_still_visible_after_click"] = None
+    result["chat_button_text_after_click"] = None
+    result["chat_button_still_visible_after_retry"] = None
+    result["chat_button_text_after_retry"] = None
     result["input_found"] = False
     result["send_button_found"] = False
+    result["daily_limit_reached"] = False
     result["recovered_by_reload"] = False
-    result["status_hint"] = None
-    result["market_code"] = market_code
+    result["timings_ms"] = {}
+    result["final_message_text"] = message_text
+
+    if not (ad_url or "").strip():
+        result["status"] = "invalid_input"
+        result["error"] = "Пустой ad_url"
+        return result
 
     if not (message_text or "").strip():
         result["status"] = "invalid_input"
         result["error"] = "Пустой message_text"
         return result
 
-    conversation = get_conversation_by_id(user_id, conversation_id)
-    if not conversation:
-        result["status"] = "conversation_not_found"
-        result["error"] = "Диалог не найден"
-        return result
-
-    account = get_account_by_id(user_id, account_id)
-    if not account:
-        result["status"] = "account_not_found"
-        result["error"] = "Аккаунт не найден"
-        return result
-
-    cookies_json = account.get("cookies_json")
-    if not cookies_json:
-        result["status"] = "missing_cookies"
-        result["error"] = "У аккаунта отсутствуют cookies_json"
-        return result
-
-    proxy_id = account.get("proxy_id")
-    if not proxy_id:
-        result["status"] = "missing_proxy"
-        result["error"] = "У аккаунта отсутствует proxy"
-        return result
-
-    proxy = get_proxy_by_id(user_id, proxy_id)
-    if not proxy or not proxy.get("proxy_text"):
-        result["status"] = "proxy_not_found"
-        result["error"] = "Proxy не найден"
-        return result
-
-    target_url = (
-        conversation.get("conversation_url")
-        or conversation.get("ad_url")
-        or get_market_dialogs_url(market_code)
-    )
-    result["target_url"] = target_url
-
     page = None
     runtime_entry = None
+    t_total = time.perf_counter()
 
     try:
+        t_step = time.perf_counter()
+
+        if not account_id or int(account_id) <= 0:
+            result["status"] = "invalid_input"
+            result["error"] = f"Некорректный account_id для send_message: {account_id}"
+            return result
+
         page, runtime_entry = await open_account_runtime_page(
             user_id=user_id,
-            account_id=account_id,
+            account_id=int(account_id),
             cookies_json=cookies_json,
-            proxy_text=proxy["proxy_text"],
-            url=target_url,
+            proxy_text=proxy_text,
+            url=ad_url,
             headless=headless,
-            olx_profile_name=account.get("olx_profile_name"),
+            olx_profile_name=olx_profile_name,
             timeout=90000,
-            wait_after_ms=4000,
-            busy_reason="reply_dialog",
+            wait_after_ms=1200,
+            busy_reason="send_message",
         )
+        result["timings_ms"]["open_account_runtime_page"] = _elapsed_ms(t_step)
 
         result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
         result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
@@ -192,7 +130,7 @@ async def _send_reply_once(
 
         try:
             await page.set_viewport_size({"width": 1440, "height": 1100})
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(200)
         except Exception:
             pass
 
@@ -205,38 +143,98 @@ async def _send_reply_once(
         if await is_cloudfront_block_page(page):
             result["status"] = "cloudfront_blocked"
             result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
             return result
 
-        handled_soft_error = await handle_olx_soft_error_page(
-            page,
-            market_code=market_code,
-        )
+        handled_soft_error = await handle_olx_soft_error_page(page)
         result["handled_soft_error_page"] = handled_soft_error
 
-        await dismiss_dialogs_overlays_if_present(page, market_code=market_code)
-        await page.wait_for_timeout(1200)
-
         if handled_soft_error:
+            try:
+                result["page_title"] = await page.title()
+            except Exception:
+                pass
             result["final_url"] = page.url
 
         if await is_cloudfront_block_page(page):
             result["status"] = "cloudfront_blocked"
             result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
             return result
 
-        result.update(await collect_chat_diagnostics(page))
+        t_step = time.perf_counter()
+        await dismiss_cookie_banner_if_present(page)
+        await page.wait_for_timeout(300)
+        result["timings_ms"]["dismiss_cookie_banner"] = _elapsed_ms(t_step)
 
+        t_step = time.perf_counter()
+        result.update(await collect_chat_diagnostics(page))
+        result["timings_ms"]["collect_chat_diagnostics_initial"] = _elapsed_ms(t_step)
+
+        t_step = time.perf_counter()
         chat_open = await ensure_chat_open(
             page,
-            target_url=target_url,
+            target_url=ad_url,
             allow_reload=True,
             settle_ms=700,
-            market_code=market_code,
         )
-        input_locator = _apply_chat_open_result(result, chat_open)
+        input_locator = chat_open.get("input_locator")
 
-        if not chat_open.get("ok"):
-            if _apply_chat_open_failure(result, chat_open):
+        for key in (
+            "message_button_clicked",
+            "message_button_clicked_retry",
+            "chat_button_retry_debug",
+            "chat_button_still_visible_after_click",
+            "chat_button_text_after_click",
+            "chat_button_still_visible_after_retry",
+            "chat_button_text_after_retry",
+            "clicked_candidate",
+            "clicked_candidate_debug",
+            "click_mode",
+            "chat_button_candidates",
+            "recovered_by_reload",
+            "debug_login_hint_found",
+            "debug_blocking_chat_gate_found",
+            "debug_chat_root_found",
+            "debug_message_input_found",
+            "debug_message_input_tag",
+            "debug_message_input_placeholder",
+            "debug_message_input_name",
+            "handled_soft_error_page",
+        ):
+            if key in chat_open:
+                result[key] = chat_open.get(key)
+
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+
+        if chat_open.get("cloudfront_blocked"):
+            result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+            result["status"] = "cloudfront_blocked"
+            result["error"] = "OLX/CloudFront заблокировал запрос и вернул 403 block page"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
+            return result
+
+        if input_locator is None:
+            result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+
+            if result.get("daily_limit_reached"):
+                result["status"] = "daily_limit_reached"
+                result["error"] = "OLX показал лимит на новые диалоги за день"
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="daily_limit_reached")
+                return result
+
+            if result.get("debug_login_hint_found") or result.get("debug_blocking_chat_gate_found"):
+                result["status"] = "login_required_or_chat_blocked"
+                result["error"] = (
+                    "После попыток открыть чат открылся логин/блокирующий интерфейс "
+                    "вместо поля ввода"
+                )
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="login_required_or_chat_blocked")
                 return result
 
             result["status"] = "message_input_not_found"
@@ -244,10 +242,22 @@ async def _send_reply_once(
                 "Не найдено поле ввода сообщения после retry открытия чата "
                 "и одного reload страницы"
             )
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_input_not_found")
             return result
 
+        result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+        result["input_found"] = True
+
+        t_step = time.perf_counter()
+        result.update(await collect_chat_diagnostics(page))
+        result["timings_ms"]["collect_chat_diagnostics_before_fill"] = _elapsed_ms(t_step)
+
+        t_step = time.perf_counter()
         await fill_message_input(input_locator, message_text)
-        await page.wait_for_timeout(700)
+        result["timings_ms"]["fill_message_input"] = _elapsed_ms(t_step)
+
+        await page.wait_for_timeout(250)
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first
@@ -259,11 +269,9 @@ async def _send_reply_once(
             result["submit_button_visible_before_click"] = None
             result["submit_button_text_before_click"] = None
 
-        send_clicked = await click_send_button(
-            page,
-            input_locator,
-            market_code=market_code,
-        )
+        t_step = time.perf_counter()
+        send_clicked = await click_send_button(page, input_locator)
+        result["timings_ms"]["click_send_button"] = _elapsed_ms(t_step)
         result["send_button_found"] = send_clicked
 
         try:
@@ -277,122 +285,88 @@ async def _send_reply_once(
             result["submit_button_text_after_click"] = None
 
         if not send_clicked:
+            t_step = time.perf_counter()
+            result.update(await collect_chat_diagnostics(page))
+            result["timings_ms"]["collect_chat_diagnostics_send_button_not_found"] = _elapsed_ms(
+                t_step
+            )
+            result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+
+            if result.get("daily_limit_reached"):
+                result["status"] = "daily_limit_reached"
+                result["error"] = "OLX показал лимит на новые диалоги за день"
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="daily_limit_reached")
+                return result
+
             result["status"] = "send_button_not_found"
             result["error"] = "Не найдена кнопка отправки сообщения"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="send_button_not_found")
             return result
 
-        await page.wait_for_timeout(1800)
+        await page.wait_for_timeout(600)
 
-        verification = await verify_message_sent(
-            page,
-            input_locator,
-            message_text,
-            market_code=market_code,
-        )
+        t_step = time.perf_counter()
+        verification = await verify_message_sent(page, input_locator, message_text)
+        result["timings_ms"]["verify_message_sent"] = _elapsed_ms(t_step)
         result.update(verification)
         result["final_url"] = page.url
+
+        t_step = time.perf_counter()
         result.update(await collect_chat_diagnostics(page))
+        result["timings_ms"]["collect_chat_diagnostics_after_verify"] = _elapsed_ms(t_step)
+
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
 
         if verification.get("delivery_verified"):
-            outgoing_key = _build_outgoing_message_key(conversation_id, message_text)
-            create_conversation_message(
-                conversation_id=conversation_id,
-                account_id=account_id,
-                external_message_key=outgoing_key,
-                direction="outgoing",
-                sender_name=account.get("olx_profile_name"),
-                text=message_text,
-                is_unread=False,
-                sent_at_hint=None,
-                status="sent",
-                notified_at=None,
-            )
-            update_conversation_last_preview(
-                user_id,
-                conversation_id,
-                last_message_preview=message_text,
-                last_message_at_hint=None,
-                last_incoming_message_key=conversation.get("last_incoming_message_key"),
-            )
-
             result["ok"] = True
             result["status"] = "sent"
             result["sent"] = True
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="sent_success")
             return result
 
         if verification.get("delivery_failed"):
-            result["status"] = "delivery_failed"
-            result["error"] = verification.get("delivery_failed_reason") or "Сообщение не доставлено"
+            reason = verification.get("delivery_failed_reason") or "OLX показал, что сообщение не доставлено"
+            result["status"] = "message_delivery_failed"
+            result["error"] = reason
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_delivery_failed")
+            return result
+
+        if result.get("daily_limit_reached"):
+            result["status"] = "daily_limit_reached"
+            result["error"] = "OLX показал лимит на новые диалоги за день"
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="daily_limit_reached")
             return result
 
         result["status"] = "send_clicked_unverified"
-        result["error"] = "Кнопка отправки нажата, но подтверждение отправки не получено"
+        result["error"] = (
+            "Кнопка отправки была нажата, но подтверждение реальной отправки не получено"
+        )
+        result["timings_ms"]["total"] = _elapsed_ms(t_total)
+        await save_debug_artifacts(page, result, prefix="send_clicked_unverified")
+        return result
+
+    except PlaywrightTimeoutError as exc:
+        result["status"] = "timeout"
+        result["error"] = str(exc)
+        result["timings_ms"]["total"] = _elapsed_ms(t_total)
         return result
 
     except Exception as exc:
-        result["status"] = "failed"
         result["error"] = str(exc)
+        result["status"] = "browser_failed"
+        result["timings_ms"]["total"] = _elapsed_ms(t_total)
+        try:
+            if page is not None:
+                await save_debug_artifacts(page, result, prefix=result["status"])
+        except Exception:
+            pass
         return result
 
     finally:
         if runtime_entry is not None:
             await close_runtime_page(runtime_entry, page)
-
-
-async def send_reply_to_conversation(
-    *,
-    user_id: int,
-    conversation_id: int,
-    account_id: int,
-    message_text: str,
-    headless: bool = True,
-    max_attempts: int = DEFAULT_REPLY_MAX_ATTEMPTS,
-    market_code: str = DEFAULT_REPLY_MARKET,
-) -> dict[str, Any]:
-    first_result = await _send_reply_once(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        account_id=account_id,
-        message_text=message_text,
-        headless=headless,
-        market_code=market_code,
-    )
-
-    first_status = first_result.get("status") or "unknown"
-
-    retry_decision = get_retry_decision(
-        action_type="reply",
-        status=first_status,
-        attempt=1,
-        max_attempts=max(1, int(max_attempts)),
-    )
-
-    if not retry_decision.should_retry:
-        first_result["retry_used"] = False
-        first_result["attempt"] = 1
-        first_result["max_attempts"] = max(1, int(max_attempts))
-        first_result["market_code"] = market_code
-        if retry_decision.reason:
-            first_result["retry_reason"] = retry_decision.reason
-        return first_result
-
-    delay_seconds = float(retry_decision.delay_seconds or 0)
-    if delay_seconds > 0:
-        await asyncio.sleep(delay_seconds)
-
-    second_result = await _send_reply_once(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        account_id=account_id,
-        message_text=message_text,
-        headless=headless,
-        market_code=market_code,
-    )
-
-    second_result["retry_used"] = True
-    second_result["first_try_status"] = first_status
-    second_result["retry_reason"] = retry_decision.reason
-    second_result["attempt"] = 2
-    second_result["max_attempts"] = max(1, int(max_attempts))
-    second_result["market_code"] = market_code
-    return second_result
