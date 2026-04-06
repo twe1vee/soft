@@ -9,7 +9,7 @@ from db import (
     get_account_by_id,
     get_conversation_by_key,
 )
-from olx.account_runtime import close_runtime_page, open_account_runtime_page
+from olx.account_runtime import use_account_runtime_page
 from olx.dialogs_page import open_dialogs_page
 from olx.dialogs_parser import (
     build_incoming_message_key,
@@ -87,15 +87,13 @@ async def check_account_dialogs(
         )
         return result
 
-    page = None
-    runtime_entry = None
-
     try:
         print(
             f"[dialogs_checker] open_runtime_start "
             f"user_id={user_id} account_id={account_id} market={market_code}"
         )
-        page, runtime_entry = await open_account_runtime_page(
+
+        async with use_account_runtime_page(
             user_id=user_id,
             account_id=account_id,
             cookies_json=cookies_json,
@@ -106,12 +104,277 @@ async def check_account_dialogs(
             timeout=90000,
             wait_after_ms=0,
             busy_reason="dialogs_check",
-        )
-        print(
-            f"[dialogs_checker] open_runtime_ok "
-            f"user_id={user_id} account_id={account_id} "
-            f"url={getattr(page, 'url', None)} market={market_code}"
-        )
+        ) as (page, runtime_entry):
+            print(
+                f"[dialogs_checker] open_runtime_ok "
+                f"user_id={user_id} account_id={account_id} "
+                f"url={getattr(page, 'url', None)} market={market_code}"
+            )
+
+            result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
+            result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
+            result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
+            result["debugger_address"] = runtime_entry.runtime.get("debugger_address")
+
+            try:
+                await page.set_viewport_size({"width": 1440, "height": 1100})
+                await page.wait_for_timeout(600)
+            except Exception as exc:
+                print(
+                    f"[dialogs_checker] viewport_warning "
+                    f"user_id={user_id} account_id={account_id} error={exc!r} market={market_code}"
+                )
+
+            print(
+                f"[dialogs_checker] before_open_dialogs "
+                f"user_id={user_id} account_id={account_id} current_url={page.url} market={market_code}"
+            )
+
+            try:
+                page_info = await asyncio.wait_for(
+                    open_dialogs_page(
+                        page,
+                        timeout=45000,
+                        wait_after_ms=2500,
+                        market_code=market_code,
+                    ),
+                    timeout=DIALOGS_OPEN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                result["status"] = "dialogs_open_timeout"
+                result["final_url"] = getattr(page, "url", None)
+                result["error"] = (
+                    f"open_dialogs_page timeout after {DIALOGS_OPEN_TIMEOUT_SECONDS}s"
+                )
+                print(
+                    f"[dialogs_checker] dialogs_open_timeout "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"final_url={result['final_url']} market={market_code}"
+                )
+                return result
+
+            result.update(page_info or {})
+            result["final_url"] = getattr(page, "url", None)
+
+            try:
+                result["page_title"] = await page.title()
+            except Exception:
+                result["page_title"] = None
+
+            print(
+                f"[dialogs_checker] after_open_dialogs "
+                f"user_id={user_id} account_id={account_id} "
+                f"final_url={result['final_url']} page_info={page_info} market={market_code}"
+            )
+
+            if await is_cloudfront_block_page(page):
+                result["status"] = "cloudfront_blocked"
+                result["cloudfront_blocked"] = True
+                result["error"] = "OLX/CloudFront вернул block page при открытии диалогов"
+                print(
+                    f"[dialogs_checker] cloudfront_blocked "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"final_url={result['final_url']} market={market_code}"
+                )
+                return result
+
+            if await has_login_hint(page):
+                result["login_hint_found"] = True
+
+                dialog_rows_found = int((page_info or {}).get("dialog_rows_found") or 0)
+                final_url = getattr(page, "url", "") or ""
+
+                dialogs_base = get_market_dialogs_url(market_code).rstrip("/")
+                dialogs_answer_prefix = dialogs_base.rstrip("s") + "/"
+
+                is_on_dialogs_page = (
+                    final_url.startswith(dialogs_base)
+                    or final_url.startswith(dialogs_answer_prefix)
+                )
+
+                if dialog_rows_found <= 0 and not is_on_dialogs_page:
+                    result["status"] = "not_logged_in"
+                    result["error"] = "OLX показывает логин вместо списка диалогов"
+                    print(
+                        f"[dialogs_checker] not_logged_in "
+                        f"user_id={user_id} account_id={account_id} "
+                        f"final_url={result['final_url']} market={market_code}"
+                    )
+                    return result
+
+                print(
+                    f"[dialogs_checker] login_hint_ignored "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"final_url={final_url} dialog_rows_found={dialog_rows_found} market={market_code}"
+                )
+
+            print(
+                f"[dialogs_checker] before_parse_dialogs "
+                f"user_id={user_id} account_id={account_id} "
+                f"final_url={result['final_url']} market={market_code}"
+            )
+
+            try:
+                parsed_dialogs = await asyncio.wait_for(
+                    parse_dialogs_page(page, market_code=market_code),
+                    timeout=DIALOGS_PARSE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                result["status"] = "dialogs_parse_timeout"
+                result["error"] = (
+                    f"parse_dialogs_page timeout after {DIALOGS_PARSE_TIMEOUT_SECONDS}s"
+                )
+                print(
+                    f"[dialogs_checker] dialogs_parse_timeout "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"final_url={result['final_url']} market={market_code}"
+                )
+                return result
+
+            result["parsed_dialogs_count"] = len(parsed_dialogs)
+            result["parsed_dialogs"] = parsed_dialogs
+
+            print(
+                f"[dialogs_checker] after_parse_dialogs "
+                f"user_id={user_id} account_id={account_id} parsed={len(parsed_dialogs)} market={market_code}"
+            )
+
+            conversations_upserted = 0
+            new_incoming_events: list[dict[str, Any]] = []
+
+            for item in parsed_dialogs:
+                conversation_key = item["conversation_key"]
+                existing_conversation = get_conversation_by_key(
+                    user_id=user_id,
+                    account_id=account_id,
+                    conversation_key=conversation_key,
+                )
+
+                is_incoming_candidate = _is_incoming_candidate(item)
+
+                print(
+                    f"[dialogs_checker] dialog_candidate "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"conversation_key={conversation_key!r} "
+                    f"seller={item.get('seller_name')!r} "
+                    f"title={item.get('ad_title')!r} "
+                    f"text={item.get('last_message_text')!r} "
+                    f"updated_hint={item.get('updated_hint')!r} "
+                    f"direction={item.get('last_message_direction_guess')!r} "
+                    f"is_unread={bool(item.get('is_unread'))!r} "
+                    f"incoming_candidate={is_incoming_candidate!r} "
+                    f"market={item.get('market_code')!r}"
+                )
+
+                incoming_message_key = None
+                if is_incoming_candidate:
+                    incoming_message_key = build_incoming_message_key(
+                        conversation_key=conversation_key,
+                        seller_name=item.get("seller_name"),
+                        last_message_text=item.get("last_message_text"),
+                        updated_hint=item.get("updated_hint"),
+                    )
+                    print(
+                        f"[dialogs_checker] incoming_key_built "
+                        f"user_id={user_id} account_id={account_id} "
+                        f"conversation_key={conversation_key!r} "
+                        f"incoming_message_key={incoming_message_key!r} market={market_code}"
+                    )
+                else:
+                    print(
+                        f"[dialogs_checker] incoming_skipped "
+                        f"user_id={user_id} account_id={account_id} "
+                        f"conversation_key={conversation_key!r} market={market_code}"
+                    )
+
+                resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
+                resolved_ad_external_id = item.get("ad_external_id") or (
+                    existing_conversation or {}
+                ).get("ad_external_id")
+                resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
+
+                conversation_id = create_or_update_conversation(
+                    user_id=user_id,
+                    account_id=account_id,
+                    conversation_key=conversation_key,
+                    conversation_url=item.get("conversation_url"),
+                    seller_name=item.get("seller_name"),
+                    ad_title=resolved_ad_title,
+                    ad_url=resolved_ad_url,
+                    ad_external_id=resolved_ad_external_id,
+                    last_message_preview=item.get("last_message_text"),
+                    last_message_at_hint=item.get("updated_hint"),
+                    is_unread=bool(item.get("is_unread")),
+                    last_incoming_message_key=incoming_message_key,
+                    status="active",
+                )
+                conversations_upserted += 1
+
+                if not incoming_message_key:
+                    continue
+
+                message_id = create_conversation_message(
+                    conversation_id=conversation_id,
+                    account_id=account_id,
+                    external_message_key=incoming_message_key,
+                    direction="incoming",
+                    sender_name=item.get("seller_name"),
+                    text=item.get("last_message_text") or "",
+                    is_unread=bool(item.get("is_unread")),
+                    sent_at_hint=item.get("updated_hint"),
+                    status="new_incoming",
+                )
+
+                if message_id is None:
+                    print(
+                        f"[dialogs_checker] message_duplicate "
+                        f"user_id={user_id} account_id={account_id} "
+                        f"conversation_key={conversation_key!r} market={market_code}"
+                    )
+                    continue
+
+                print(
+                    f"[dialogs_checker] new_incoming_created "
+                    f"user_id={user_id} account_id={account_id} "
+                    f"conversation_key={conversation_key!r} "
+                    f"message_id={message_id!r} market={market_code}"
+                )
+
+                new_incoming_events.append(
+                    {
+                        "conversation_id": conversation_id,
+                        "conversation_key": conversation_key,
+                        "message_id": message_id,
+                        "account_id": account_id,
+                        "seller_name": item.get("seller_name"),
+                        "ad_title": resolved_ad_title,
+                        "ad_url": resolved_ad_url,
+                        "ad_external_id": resolved_ad_external_id,
+                        "conversation_url": item.get("conversation_url"),
+                        "text": item.get("last_message_text"),
+                        "is_unread": bool(item.get("is_unread")),
+                        "updated_hint": item.get("updated_hint"),
+                        "is_new_conversation": existing_conversation is None,
+                        "market_code": market_code,
+                    }
+                )
+
+            result["conversations_upserted"] = conversations_upserted
+            result["new_incoming_events"] = new_incoming_events
+            result["new_incoming_count"] = len(new_incoming_events)
+            result["ok"] = True
+            result["status"] = "ok"
+
+            print(
+                f"[dialogs_checker] done "
+                f"user_id={user_id} account_id={account_id} "
+                f"parsed={result['parsed_dialogs_count']} "
+                f"upserted={result['conversations_upserted']} "
+                f"new_incoming={result['new_incoming_count']} "
+                f"market={market_code}"
+            )
+            return result
+
     except AccountRuntimeBlockedError as exc:
         result["status"] = "skipped_runtime_blocked"
         result["error"] = str(exc)
@@ -121,282 +384,8 @@ async def check_account_dialogs(
         )
         return result
     except Exception as exc:
-        result["status"] = "failed_open_runtime"
-        result["error"] = str(exc)
-        print(
-            f"[dialogs_checker] failed_open_runtime "
-            f"user_id={user_id} account_id={account_id} error={exc!r} market={market_code}"
-        )
-        return result
-
-    try:
-        result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
-        result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
-        result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
-        result["debugger_address"] = runtime_entry.runtime.get("debugger_address")
-
-        try:
-            await page.set_viewport_size({"width": 1440, "height": 1100})
-            await page.wait_for_timeout(600)
-        except Exception as exc:
-            print(
-                f"[dialogs_checker] viewport_warning "
-                f"user_id={user_id} account_id={account_id} error={exc!r} market={market_code}"
-            )
-
-        print(
-            f"[dialogs_checker] before_open_dialogs "
-            f"user_id={user_id} account_id={account_id} current_url={page.url} market={market_code}"
-        )
-
-        try:
-            page_info = await asyncio.wait_for(
-                open_dialogs_page(
-                    page,
-                    timeout=45000,
-                    wait_after_ms=2500,
-                    market_code=market_code,
-                ),
-                timeout=DIALOGS_OPEN_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            result["status"] = "dialogs_open_timeout"
-            result["final_url"] = getattr(page, "url", None)
-            result["error"] = (
-                f"open_dialogs_page timeout after {DIALOGS_OPEN_TIMEOUT_SECONDS}s"
-            )
-            print(
-                f"[dialogs_checker] dialogs_open_timeout "
-                f"user_id={user_id} account_id={account_id} "
-                f"final_url={result['final_url']} market={market_code}"
-            )
-            return result
-
-        result.update(page_info or {})
-        result["final_url"] = getattr(page, "url", None)
-
-        try:
-            result["page_title"] = await page.title()
-        except Exception:
-            result["page_title"] = None
-
-        print(
-            f"[dialogs_checker] after_open_dialogs "
-            f"user_id={user_id} account_id={account_id} "
-            f"final_url={result['final_url']} page_info={page_info} market={market_code}"
-        )
-
-        if await is_cloudfront_block_page(page):
-            result["status"] = "cloudfront_blocked"
-            result["cloudfront_blocked"] = True
-            result["error"] = "OLX/CloudFront вернул block page при открытии диалогов"
-            print(
-                f"[dialogs_checker] cloudfront_blocked "
-                f"user_id={user_id} account_id={account_id} "
-                f"final_url={result['final_url']} market={market_code}"
-            )
-            return result
-
-        if await has_login_hint(page):
-            result["login_hint_found"] = True
-
-            dialog_rows_found = int((page_info or {}).get("dialog_rows_found") or 0)
-            final_url = getattr(page, "url", "") or ""
-
-            dialogs_base = get_market_dialogs_url(market_code).rstrip("/")
-            dialogs_answer_prefix = dialogs_base.rstrip("s") + "/"
-
-            is_on_dialogs_page = (
-                final_url.startswith(dialogs_base)
-                or final_url.startswith(dialogs_answer_prefix)
-            )
-
-            if dialog_rows_found <= 0 and not is_on_dialogs_page:
-                result["status"] = "not_logged_in"
-                result["error"] = "OLX показывает логин вместо списка диалогов"
-                print(
-                    f"[dialogs_checker] not_logged_in "
-                    f"user_id={user_id} account_id={account_id} "
-                    f"final_url={result['final_url']} market={market_code}"
-                )
-                return result
-
-            print(
-                f"[dialogs_checker] login_hint_ignored "
-                f"user_id={user_id} account_id={account_id} "
-                f"final_url={final_url} dialog_rows_found={dialog_rows_found} market={market_code}"
-            )
-
-        print(
-            f"[dialogs_checker] before_parse_dialogs "
-            f"user_id={user_id} account_id={account_id} "
-            f"final_url={result['final_url']} market={market_code}"
-        )
-
-        try:
-            parsed_dialogs = await asyncio.wait_for(
-                parse_dialogs_page(page, market_code=market_code),
-                timeout=DIALOGS_PARSE_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            result["status"] = "dialogs_parse_timeout"
-            result["error"] = (
-                f"parse_dialogs_page timeout after {DIALOGS_PARSE_TIMEOUT_SECONDS}s"
-            )
-            print(
-                f"[dialogs_checker] dialogs_parse_timeout "
-                f"user_id={user_id} account_id={account_id} "
-                f"final_url={result['final_url']} market={market_code}"
-            )
-            return result
-
-        result["parsed_dialogs_count"] = len(parsed_dialogs)
-        result["parsed_dialogs"] = parsed_dialogs
-
-        print(
-            f"[dialogs_checker] after_parse_dialogs "
-            f"user_id={user_id} account_id={account_id} parsed={len(parsed_dialogs)} market={market_code}"
-        )
-
-        conversations_upserted = 0
-        new_incoming_events: list[dict[str, Any]] = []
-
-        for item in parsed_dialogs:
-            conversation_key = item["conversation_key"]
-            existing_conversation = get_conversation_by_key(
-                user_id=user_id,
-                account_id=account_id,
-                conversation_key=conversation_key,
-            )
-
-            is_incoming_candidate = _is_incoming_candidate(item)
-
-            print(
-                f"[dialogs_checker] dialog_candidate "
-                f"user_id={user_id} account_id={account_id} "
-                f"conversation_key={conversation_key!r} "
-                f"seller={item.get('seller_name')!r} "
-                f"title={item.get('ad_title')!r} "
-                f"text={item.get('last_message_text')!r} "
-                f"updated_hint={item.get('updated_hint')!r} "
-                f"direction={item.get('last_message_direction_guess')!r} "
-                f"is_unread={bool(item.get('is_unread'))!r} "
-                f"incoming_candidate={is_incoming_candidate!r} "
-                f"market={item.get('market_code')!r}"
-            )
-
-            incoming_message_key = None
-            if is_incoming_candidate:
-                incoming_message_key = build_incoming_message_key(
-                    conversation_key=conversation_key,
-                    seller_name=item.get("seller_name"),
-                    last_message_text=item.get("last_message_text"),
-                    updated_hint=item.get("updated_hint"),
-                )
-                print(
-                    f"[dialogs_checker] incoming_key_built "
-                    f"user_id={user_id} account_id={account_id} "
-                    f"conversation_key={conversation_key!r} "
-                    f"incoming_message_key={incoming_message_key!r} market={market_code}"
-                )
-            else:
-                print(
-                    f"[dialogs_checker] incoming_skipped "
-                    f"user_id={user_id} account_id={account_id} "
-                    f"conversation_key={conversation_key!r} market={market_code}"
-                )
-
-            resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
-            resolved_ad_external_id = item.get("ad_external_id") or (
-                existing_conversation or {}
-            ).get("ad_external_id")
-            resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
-
-            conversation_id = create_or_update_conversation(
-                user_id=user_id,
-                account_id=account_id,
-                conversation_key=conversation_key,
-                conversation_url=item.get("conversation_url"),
-                seller_name=item.get("seller_name"),
-                ad_title=resolved_ad_title,
-                ad_url=resolved_ad_url,
-                ad_external_id=resolved_ad_external_id,
-                last_message_preview=item.get("last_message_text"),
-                last_message_at_hint=item.get("updated_hint"),
-                is_unread=bool(item.get("is_unread")),
-                last_incoming_message_key=incoming_message_key,
-                status="active",
-            )
-            conversations_upserted += 1
-
-            if not incoming_message_key:
-                continue
-
-            message_id = create_conversation_message(
-                conversation_id=conversation_id,
-                account_id=account_id,
-                external_message_key=incoming_message_key,
-                direction="incoming",
-                sender_name=item.get("seller_name"),
-                text=item.get("last_message_text") or "",
-                is_unread=bool(item.get("is_unread")),
-                sent_at_hint=item.get("updated_hint"),
-                status="new_incoming",
-            )
-
-            if message_id is None:
-                print(
-                    f"[dialogs_checker] message_duplicate "
-                    f"user_id={user_id} account_id={account_id} "
-                    f"conversation_key={conversation_key!r} market={market_code}"
-                )
-                continue
-
-            print(
-                f"[dialogs_checker] new_incoming_created "
-                f"user_id={user_id} account_id={account_id} "
-                f"conversation_key={conversation_key!r} "
-                f"message_id={message_id!r} market={market_code}"
-            )
-
-            new_incoming_events.append(
-                {
-                    "conversation_id": conversation_id,
-                    "conversation_key": conversation_key,
-                    "message_id": message_id,
-                    "account_id": account_id,
-                    "seller_name": item.get("seller_name"),
-                    "ad_title": resolved_ad_title,
-                    "ad_url": resolved_ad_url,
-                    "ad_external_id": resolved_ad_external_id,
-                    "conversation_url": item.get("conversation_url"),
-                    "text": item.get("last_message_text"),
-                    "is_unread": bool(item.get("is_unread")),
-                    "updated_hint": item.get("updated_hint"),
-                    "is_new_conversation": existing_conversation is None,
-                    "market_code": market_code,
-                }
-            )
-
-        result["conversations_upserted"] = conversations_upserted
-        result["new_incoming_events"] = new_incoming_events
-        result["new_incoming_count"] = len(new_incoming_events)
-        result["ok"] = True
-        result["status"] = "ok"
-
-        print(
-            f"[dialogs_checker] done "
-            f"user_id={user_id} account_id={account_id} "
-            f"parsed={result['parsed_dialogs_count']} "
-            f"upserted={result['conversations_upserted']} "
-            f"new_incoming={result['new_incoming_count']} "
-            f"market={market_code}"
-        )
-        return result
-
-    except Exception as exc:
         result["status"] = "failed"
-        result["final_url"] = getattr(page, "url", None) if page is not None else None
+        result["final_url"] = None
         result["error"] = str(exc)
         print(
             f"[dialogs_checker] failed "
@@ -404,13 +393,6 @@ async def check_account_dialogs(
             f"final_url={result['final_url']} error={exc!r} market={market_code}"
         )
         return result
-    finally:
-        if runtime_entry is not None:
-            print(
-                f"[dialogs_checker] close_runtime "
-                f"user_id={user_id} account_id={account_id} market={market_code}"
-            )
-            await close_runtime_page(runtime_entry, page)
 
 
 async def check_user_dialogs(

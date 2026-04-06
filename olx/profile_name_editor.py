@@ -4,7 +4,7 @@ from typing import Any
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from olx.account_runtime import close_runtime_page, open_account_runtime_page
+from olx.account_runtime import use_account_runtime_page
 
 USER_SETTINGS_URL = "https://www.olx.pt/myaccount/user-settings/"
 
@@ -218,9 +218,6 @@ async def update_olx_profile_name(
             "error": "Имя слишком длинное.",
         }
 
-    page = None
-    entry = None
-
     result: dict[str, Any] = {
         "ok": False,
         "status": "failed",
@@ -233,7 +230,7 @@ async def update_olx_profile_name(
     }
 
     try:
-        page, entry = await open_account_runtime_page(
+        async with use_account_runtime_page(
             user_id=user_id,
             account_id=account_id,
             cookies_json=cookies_json,
@@ -244,52 +241,50 @@ async def update_olx_profile_name(
             timeout=90000,
             wait_after_ms=2500,
             busy_reason="rename_profile_name",
-        )
+        ) as (page, entry):
+            await _open_user_settings_page(page)
+            await _expand_edit_profile_section_if_needed(page)
 
-        await _open_user_settings_page(page)
-        await _expand_edit_profile_section_if_needed(page)
+            previous_name = await _read_current_name(page)
+            result["previous_name"] = previous_name
+            result["final_url"] = page.url
 
-        previous_name = await _read_current_name(page)
-        result["previous_name"] = previous_name
-        result["final_url"] = page.url
-
-        if normalize_profile_name(previous_name).lower() == normalized_name.lower():
-            result["ok"] = True
-            result["status"] = "unchanged"
-            result["saved_name"] = previous_name
-            return result
-
-        delay_seconds = await _apply_random_human_delay(page)
-        result["delay_seconds"] = delay_seconds
-
-        await _fill_new_name(page, normalized_name)
-
-        save_button = await _get_save_button(page)
-        save_enabled = await _wait_save_enabled(save_button, timeout_ms=10000)
-        if not save_enabled:
-            result["status"] = "save_not_enabled"
-            result["error"] = "Кнопка Guardar не стала активной после изменения имени."
-            return result
-
-        await save_button.click()
-        await page.wait_for_timeout(600)
-
-        if not await _wait_success_dialog(page, timeout_ms=12000):
-            # fallback: перечитать поле
-            reread_name = await _read_current_name(page)
-            if normalize_profile_name(reread_name).lower() != normalized_name.lower():
-                result["status"] = "save_failed"
-                result["error"] = "OLX не подтвердил сохранение имени."
-                result["saved_name"] = reread_name
+            if normalize_profile_name(previous_name).lower() == normalized_name.lower():
+                result["ok"] = True
+                result["status"] = "unchanged"
+                result["saved_name"] = previous_name
                 return result
 
-        saved_name = await _read_current_name(page)
+            delay_seconds = await _apply_random_human_delay(page)
+            result["delay_seconds"] = delay_seconds
 
-        result["ok"] = True
-        result["status"] = "updated"
-        result["saved_name"] = saved_name
-        result["final_url"] = page.url
-        return result
+            await _fill_new_name(page, normalized_name)
+
+            save_button = await _get_save_button(page)
+            save_enabled = await _wait_save_enabled(save_button, timeout_ms=10000)
+            if not save_enabled:
+                result["status"] = "save_not_enabled"
+                result["error"] = "Кнопка Guardar не стала активной после изменения имени."
+                return result
+
+            await save_button.click()
+            await page.wait_for_timeout(600)
+
+            if not await _wait_success_dialog(page, timeout_ms=12000):
+                reread_name = await _read_current_name(page)
+                if normalize_profile_name(reread_name).lower() != normalized_name.lower():
+                    result["status"] = "save_failed"
+                    result["error"] = "OLX не подтвердил сохранение имени."
+                    result["saved_name"] = reread_name
+                    return result
+
+            saved_name = await _read_current_name(page)
+
+            result["ok"] = True
+            result["status"] = "updated"
+            result["saved_name"] = saved_name
+            result["final_url"] = page.url
+            return result
 
     except PlaywrightTimeoutError as exc:
         result["status"] = "timeout"
@@ -303,6 +298,3 @@ async def update_olx_profile_name(
         result["status"] = "failed"
         result["error"] = str(exc)
         return result
-    finally:
-        if page is not None and entry is not None:
-            await close_runtime_page(entry, page)

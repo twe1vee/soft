@@ -2,6 +2,7 @@ from __future__ import annotations
 from db.accounts import touch_account_last_used
 import asyncio
 import contextlib
+from contextlib import asynccontextmanager
 import time
 from olx.runtime_rate_limit import (
     clear_runtime_open_failure,
@@ -156,6 +157,89 @@ async def get_account_runtime(
 
         entry.touch()
         return entry
+
+@asynccontextmanager
+async def use_account_runtime_page(
+    *,
+    user_id: int | None,
+    account_id: int,
+    cookies_json: str,
+    proxy_text: str,
+    url: str | None = None,
+    headless: bool = True,
+    olx_profile_name: str | None = None,
+    timeout: int = 90000,
+    wait_after_ms: int = 3000,
+    busy_reason: str | None = None,
+):
+    if not account_id or int(account_id) <= 0:
+        raise ValueError(f"invalid account_id for runtime page: {account_id}")
+
+    account_id = int(account_id)
+
+    _runtime_debug(
+        f"use_page_request account_id={account_id} "
+        f"user_id={user_id} busy_reason={busy_reason} url={url}"
+    )
+
+    entry = await get_account_runtime(
+        user_id=user_id,
+        account_id=account_id,
+        cookies_json=cookies_json,
+        proxy_text=proxy_text,
+        headless=headless,
+        olx_profile_name=olx_profile_name,
+    )
+
+    async with entry.lock:
+        if entry.deleted or entry.closing or entry.context is None:
+            raise RuntimeError(f"account runtime unavailable: {account_id}")
+
+        previous_busy_reason = entry.busy_reason
+        entry.busy_reason = busy_reason
+        entry.touch()
+
+        page = None
+        try:
+            page = await entry.context.new_page()
+
+            if url:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            if wait_after_ms > 0:
+                await page.wait_for_timeout(wait_after_ms)
+
+            entry.touch()
+
+            runtime = entry.runtime or {}
+            _runtime_debug(
+                f"use_page_opened account_id={account_id} "
+                f"engine={runtime.get('browser_engine')} "
+                f"profile_id={runtime.get('gologin_profile_id')} "
+                f"url={getattr(page, 'url', None)} "
+                f"busy_reason={busy_reason}"
+            )
+
+            yield page, entry
+
+        finally:
+            try:
+                if page is not None and not page.is_closed():
+                    await page.close()
+            except Exception as exc:
+                _runtime_debug(
+                    f"use_page_close_failed account_id={account_id} error={exc}"
+                )
+            finally:
+                runtime = entry.runtime or {}
+                _runtime_debug(
+                    f"use_page_closed account_id={account_id} "
+                    f"engine={runtime.get('browser_engine')} "
+                    f"profile_id={runtime.get('gologin_profile_id')} "
+                    f"busy_reason={busy_reason}"
+                )
+                entry.busy_reason = previous_busy_reason
+                entry.touch()
+
 
 async def open_account_runtime_page(
     *,

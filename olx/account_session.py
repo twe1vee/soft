@@ -4,10 +4,8 @@ from typing import Any
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from olx.browser_session import (
-    dismiss_cookie_banner_if_present,
-    open_olx_browser_context,
-)
+from olx.account_runtime import use_account_runtime_page
+from olx.browser_session import dismiss_cookie_banner_if_present
 from olx.markets.helpers import (
     extract_url_domain,
     get_market_account_url,
@@ -259,20 +257,27 @@ async def check_account_alive(
     }
 
     try:
-        async with open_olx_browser_context(
+        if not account_id or int(account_id) <= 0:
+            result["status"] = "failed"
+            result["error"] = f"Некорректный account_id для check_account_alive: {account_id}"
+            return result
+
+        async with use_account_runtime_page(
+            user_id=user_id,
+            account_id=int(account_id),
             cookies_json=cookies_json,
             proxy_text=proxy_text,
+            url=None,
             headless=headless,
-            user_id=user_id,
-            account_id=account_id,
             olx_profile_name=olx_profile_name,
-        ) as (_, context, runtime):
-            result["browser_engine"] = runtime.get("browser_engine", "gologin")
-            result["gologin_profile_id"] = runtime.get("gologin_profile_id")
-            result["gologin_profile_name"] = runtime.get("gologin_profile_name")
-            result["debugger_address"] = runtime.get("debugger_address")
-
-            page = await context.new_page()
+            timeout=90000,
+            wait_after_ms=0,
+            busy_reason="check_account_alive",
+        ) as (page, runtime_entry):
+            result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
+            result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
+            result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
+            result["debugger_address"] = runtime_entry.runtime.get("debugger_address")
 
             result["attempts_used"] = 2
             final_url, page_title, body_text = await _open_account_area_with_retry(
