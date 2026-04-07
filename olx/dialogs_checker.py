@@ -8,6 +8,8 @@ from db import (
     create_or_update_conversation,
     get_account_by_id,
     get_conversation_by_key,
+    get_ad_by_user_account_seller_title,
+    get_ad_by_user_ad_external_id,
 )
 from olx.account_runtime import use_account_runtime_page
 from olx.dialogs_page import open_dialogs_page
@@ -289,13 +291,37 @@ async def check_account_dialogs(
 
                 resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
                 resolved_ad_external_id = item.get("ad_external_id") or (
-                    existing_conversation or {}
+                        existing_conversation or {}
                 ).get("ad_external_id")
                 resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
+                resolved_ad_db_id = (existing_conversation or {}).get("ad_id")
+
+                matched_ad = None
+
+                if resolved_ad_external_id:
+                    matched_ad = get_ad_by_user_ad_external_id(
+                        user_id=user_id,
+                        ad_external_id=resolved_ad_external_id,
+                    )
+
+                if not matched_ad:
+                    matched_ad = get_ad_by_user_account_seller_title(
+                        user_id=user_id,
+                        account_id=account_id,
+                        seller_name=item.get("seller_name"),
+                        ad_title=item.get("ad_title"),
+                    )
+
+                if matched_ad:
+                    resolved_ad_url = resolved_ad_url or matched_ad.get("url")
+                    resolved_ad_external_id = resolved_ad_external_id or matched_ad.get("ad_id")
+                    resolved_ad_title = resolved_ad_title or matched_ad.get("title")
+                    resolved_ad_db_id = resolved_ad_db_id or matched_ad.get("id")
 
                 conversation_id = create_or_update_conversation(
                     user_id=user_id,
                     account_id=account_id,
+                    ad_id=resolved_ad_db_id,
                     conversation_key=conversation_key,
                     conversation_url=item.get("conversation_url"),
                     seller_name=item.get("seller_name"),

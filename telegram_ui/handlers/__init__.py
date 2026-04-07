@@ -90,7 +90,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_editing_ad_text(update, context, text)
         return
 
-    if context.user_data.get("reply_conversation_id") and context.user_data.get("reply_account_id"):
+    reply_to = update.message.reply_to_message if update.message else None
+    reply_to_message_id = reply_to.message_id if reply_to else None
+
+    bindings = context.user_data.get("dialog_reply_bindings") or {}
+    has_reply_binding = bool(reply_to_message_id and bindings.get(str(reply_to_message_id)))
+
+    if (
+            has_reply_binding
+            or (
+            context.user_data.get("reply_conversation_id")
+            and context.user_data.get("reply_account_id")
+    )
+    ):
         await handle_dialog_reply_text(update, context, text)
         return
 

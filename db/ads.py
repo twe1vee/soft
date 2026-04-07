@@ -1,6 +1,95 @@
 from db.database import get_connection
 
 
+
+def _norm_text(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def get_ad_by_user_account_seller_title(
+    user_id: int,
+    account_id: int,
+    seller_name: str | None,
+    ad_title: str | None,
+) -> dict | None:
+    """
+    Ищем объявление пользователя, которое уже отправлялось именно с этого account_id.
+    Это самый безопасный матч для входящих диалогов.
+    """
+    seller_norm = _norm_text(seller_name)
+    title_norm = _norm_text(ad_title)
+
+    if not seller_norm and not title_norm:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            a.*
+        FROM ads a
+        JOIN pending_actions pa ON pa.ad_id = a.id
+        JOIN send_jobs sj ON sj.pending_action_id = pa.id
+        WHERE a.user_id = ?
+          AND sj.account_id = ?
+        ORDER BY a.id DESC
+        """,
+        (user_id, account_id),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    for row in rows:
+        item = dict(row)
+        row_seller = _norm_text(item.get("seller_name"))
+        row_title = _norm_text(item.get("title"))
+
+        seller_ok = bool(seller_norm and row_seller and seller_norm == row_seller)
+        title_ok = bool(title_norm and row_title and title_norm == row_title)
+
+        if seller_ok and title_ok:
+            return item
+
+    for row in rows:
+        item = dict(row)
+        row_title = _norm_text(item.get("title"))
+        if title_norm and row_title and title_norm == row_title:
+            return item
+
+    for row in rows:
+        item = dict(row)
+        row_seller = _norm_text(item.get("seller_name"))
+        if seller_norm and row_seller and seller_norm == row_seller:
+            return item
+
+    return None
+
+
+def get_ad_by_user_ad_external_id(
+    user_id: int,
+    ad_external_id: str | None,
+) -> dict | None:
+    if not ad_external_id:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT *
+        FROM ads
+        WHERE user_id = ? AND ad_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (user_id, ad_external_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def ad_exists(user_id: int, ad_id: str | None) -> bool:
     if not ad_id:
         return False
