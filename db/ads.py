@@ -13,8 +13,14 @@ def get_ad_by_user_account_seller_title(
     ad_title: str | None,
 ) -> dict | None:
     """
-    Ищем объявление пользователя, которое уже отправлялось именно с этого account_id.
-    Это самый безопасный матч для входящих диалогов.
+    Боевой безопасный fallback для входящих диалогов.
+
+    Вариант A:
+    не зависим от pending_actions/send_jobs, потому что на части клиентских БД
+    таблицы send_jobs ещё нет, а send queue сейчас живёт in-memory.
+
+    Ищем среди объявлений пользователя по seller_name / title.
+    account_id пока оставляем в сигнатуре только для совместимости вызовов.
     """
     seller_norm = _norm_text(seller_name)
     title_norm = _norm_text(ad_title)
@@ -27,22 +33,20 @@ def get_ad_by_user_account_seller_title(
 
     cursor.execute(
         """
-        SELECT
-            a.*
-        FROM ads a
-        JOIN pending_actions pa ON pa.ad_id = a.id
-        JOIN send_jobs sj ON sj.pending_action_id = pa.id
-        WHERE a.user_id = ?
-          AND sj.account_id = ?
-        ORDER BY a.id DESC
+        SELECT *
+        FROM ads
+        WHERE user_id = ?
+        ORDER BY id DESC
         """,
-        (user_id, account_id),
+        (user_id,),
     )
     rows = cursor.fetchall()
     conn.close()
 
-    for row in rows:
-        item = dict(row)
+    items = [dict(row) for row in rows]
+
+    # 1. Самый сильный матч: seller + title
+    for item in items:
         row_seller = _norm_text(item.get("seller_name"))
         row_title = _norm_text(item.get("title"))
 
@@ -52,20 +56,19 @@ def get_ad_by_user_account_seller_title(
         if seller_ok and title_ok:
             return item
 
-    for row in rows:
-        item = dict(row)
+    # 2. Fallback: только title
+    for item in items:
         row_title = _norm_text(item.get("title"))
         if title_norm and row_title and title_norm == row_title:
             return item
 
-    for row in rows:
-        item = dict(row)
+    # 3. Fallback: только seller
+    for item in items:
         row_seller = _norm_text(item.get("seller_name"))
         if seller_norm and row_seller and seller_norm == row_seller:
             return item
 
     return None
-
 
 def get_ad_by_user_ad_external_id(
     user_id: int,
