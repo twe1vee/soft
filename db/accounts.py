@@ -183,16 +183,40 @@ def get_user_accounts(user_id: int) -> list[dict]:
 
 
 def update_account_status(user_id: int, account_id: int, new_status: str):
+    ensure_accounts_write_blocked_column()
+
+    normalized_status = (new_status or "").strip().lower()
+    now_ts = int(time.time())
+
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        UPDATE accounts
-        SET status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND user_id = ?
-        """,
-        (new_status, account_id, user_id),
-    )
+
+    if normalized_status == "write_blocked":
+        cursor.execute(
+            """
+            UPDATE accounts
+            SET status = ?,
+                write_blocked_at = COALESCE(write_blocked_at, ?),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ?
+            """,
+            (normalized_status, now_ts, account_id, user_id),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE accounts
+            SET status = ?,
+                write_blocked_at = CASE
+                    WHEN ? != 'write_blocked' THEN NULL
+                    ELSE write_blocked_at
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ?
+            """,
+            (normalized_status, normalized_status, account_id, user_id),
+        )
+
     conn.commit()
     conn.close()
 
@@ -347,3 +371,84 @@ def delete_account(user_id: int, account_id: int):
     )
     conn.commit()
     conn.close()
+
+def ensure_accounts_write_blocked_column():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(accounts)")
+    columns = {str(row["name"]) for row in cursor.fetchall()}
+    if "write_blocked_at" not in columns:
+        cursor.execute(
+            "ALTER TABLE accounts ADD COLUMN write_blocked_at INTEGER DEFAULT NULL"
+        )
+        conn.commit()
+    conn.close()
+
+
+def mark_account_write_blocked(user_id: int, account_id: int, ts: int | None = None):
+    ensure_accounts_write_blocked_column()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE accounts
+        SET status = 'write_blocked',
+            write_blocked_at = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+        """,
+        (int(ts or time.time()), int(account_id), int(user_id)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_account_write_blocked(user_id: int, account_id: int):
+    ensure_accounts_write_blocked_column()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE accounts
+        SET write_blocked_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+        """,
+        (int(account_id), int(user_id)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_expired_write_blocked_accounts_with_profiles(grace_seconds: int) -> list[dict]:
+    ensure_accounts_last_used_column()
+    ensure_accounts_write_blocked_column()
+
+    threshold = int(time.time()) - int(grace_seconds)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            status,
+            olx_profile_name,
+            gologin_profile_id,
+            gologin_profile_name,
+            write_blocked_at,
+            last_used_at
+        FROM accounts
+        WHERE status = 'write_blocked'
+          AND write_blocked_at IS NOT NULL
+          AND write_blocked_at < ?
+        ORDER BY id ASC
+        """,
+        (threshold,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

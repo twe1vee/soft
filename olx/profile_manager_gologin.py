@@ -16,6 +16,7 @@ from db.accounts import (
     touch_account_last_used,
     update_account_browser_engine,
     update_account_gologin_profile,
+    get_expired_write_blocked_accounts_with_profiles,
 )
 from olx.cookies import normalize_cookies
 from olx.runtime_rate_limit import (
@@ -461,6 +462,60 @@ def cleanup_stale_gologin_profiles(
         "ok": True,
         "idle_seconds": int(idle_seconds),
         "found_count": len(stale_accounts),
+        "deleted_count": len(deleted),
+        "failed_count": len(failed),
+        "deleted": deleted,
+        "failed": failed,
+    }
+WRITE_BLOCKED_DELETE_SECONDS = 30 * 60
+
+
+def cleanup_expired_write_blocked_accounts(
+    *,
+    grace_seconds: int = WRITE_BLOCKED_DELETE_SECONDS,
+) -> dict[str, Any]:
+    expired_accounts = get_expired_write_blocked_accounts_with_profiles(grace_seconds)
+
+    deleted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for item in expired_accounts:
+        account_id = int(item["id"])
+        user_id = int(item["user_id"])
+        profile_id = str(item.get("gologin_profile_id") or "").strip()
+
+        try:
+            if profile_id:
+                delete_gologin_profile(profile_id)
+
+            delete_account(user_id, account_id)
+
+            deleted.append(
+                {
+                    "account_id": account_id,
+                    "user_id": user_id,
+                    "gologin_profile_id": profile_id or None,
+                    "gologin_profile_name": item.get("gologin_profile_name"),
+                    "write_blocked_at": item.get("write_blocked_at"),
+                    "last_used_at": item.get("last_used_at"),
+                }
+            )
+        except Exception as exc:
+            failed.append(
+                {
+                    "account_id": account_id,
+                    "user_id": user_id,
+                    "gologin_profile_id": profile_id or None,
+                    "write_blocked_at": item.get("write_blocked_at"),
+                    "last_used_at": item.get("last_used_at"),
+                    "error": str(exc),
+                }
+            )
+
+    return {
+        "ok": True,
+        "grace_seconds": int(grace_seconds),
+        "found_count": len(expired_accounts),
         "deleted_count": len(deleted),
         "failed_count": len(failed),
         "deleted": deleted,

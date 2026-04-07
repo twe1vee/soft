@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import re
+
 from telegram.constants import ParseMode
 from telegram import Update
 from telegram.error import BadRequest, NetworkError, TimedOut
@@ -28,6 +32,18 @@ from telegram_ui.handlers.ad_helpers import (
 )
 from telegram_ui.handlers.common import build_ad_caption, get_current_user
 from telegram_ui.menu import build_action_keyboard, build_back_to_menu_keyboard
+
+
+def _extract_fallback_olx_ad_id(url: str) -> str | None:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+
+    match = re.search(r"-([A-Za-z0-9]+)\.html(?:\?|$)", raw)
+    if match:
+        return match.group(1)
+
+    return None
 
 
 async def safe_edit_message_text(
@@ -149,6 +165,11 @@ async def handle_links_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         except Exception as e:
             await _reply_parse_error(update, url, f"Ошибка парсинга:\n\n{e}")
             continue
+
+        if not ad_data.get("ad_id"):
+            fallback_ad_id = _extract_fallback_olx_ad_id(url)
+            if fallback_ad_id:
+                ad_data["ad_id"] = fallback_ad_id
 
         if not ad_data.get("ad_id"):
             await _reply_parse_error(update, url, "Не удалось извлечь ad_id:\n")

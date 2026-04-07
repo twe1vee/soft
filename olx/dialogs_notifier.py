@@ -33,14 +33,12 @@ def build_incoming_dialog_text(
     lines = [
         "📩 <b>Новое сообщение от продавца</b>",
         f"Продавец: {seller_name}",
-        f"Аккаунт ID: {account_id}",
         f"Имя профиля: {profile_name}",
         f"Объявление: {ad_title}",
-        f"OLX ID: {ad_external_id}",
         f"Время: {updated_hint}",
         "",
         "Сообщение:",
-        f"<blockquote>{original_text}</blockquote>",
+        f"<pre>{original_text}</pre>",
     ]
 
     if ad_url:

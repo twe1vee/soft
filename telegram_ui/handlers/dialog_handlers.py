@@ -10,25 +10,42 @@ from telegram_ui.handlers.common import get_current_user
 
 
 def build_dialog_reply_result_text(conversation: dict | None, result: dict) -> str:
+    profile_name = (
+        result.get("gologin_profile_name")
+        or result.get("olx_profile_name")
+        or "без имени"
+    )
+
     lines = [
         "📤 Результат ответа в диалог",
-        f"Диалог ID: {result.get('conversation_id') or '—'}",
-        f"Аккаунт ID: {result.get('account_id') or '—'}",
-        f"Статус: {result.get('status') or 'unknown'}",
-        f"Final URL: {result.get('final_url') or result.get('target_url') or '—'}",
+        f"Имя профиля: {profile_name}",
     ]
 
     if conversation:
         lines.insert(1, f"Продавец: {conversation.get('seller_name') or '—'}")
         lines.insert(2, f"Объявление: {conversation.get('ad_title') or '—'}")
 
+        ad_url = (conversation.get("ad_url") or "").strip()
+        if ad_url:
+            lines.append(f"Ссылка на объявление: {ad_url}")
+
     if result.get("error"):
         lines.append(f"Ошибка: {result['error']}")
 
     if result.get("ok") or result.get("sent") or result.get("status") == "sent":
-        lines.append("✅ Ответ реально отправлен продавцу")
+        lines.append("✅ Ответ отправлен продавцу")
 
     return "\n".join(lines)
+
+
+def _get_reply_bindings(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    bindings = context.user_data.get("dialog_reply_bindings")
+    if isinstance(bindings, dict):
+        return bindings
+
+    bindings = {}
+    context.user_data["dialog_reply_bindings"] = bindings
+    return bindings
 
 
 async def handle_dialog_callback(
@@ -60,10 +77,18 @@ async def handle_dialog_callback(
             return
 
         context.user_data.pop("awaiting_links", None)
-        context.user_data["reply_conversation_id"] = conversation_id
-        context.user_data["reply_account_id"] = account_id
 
-        await query.message.reply_text("Пришли текст ответа следующим сообщением.")
+        prompt = await query.message.reply_text(
+            "Пришли текст ответа следующим сообщением.\n\n"
+            "Важно: ответь именно на это сообщение."
+        )
+
+        bindings = _get_reply_bindings(context)
+        bindings[str(prompt.message_id)] = {
+            "conversation_id": conversation_id,
+            "account_id": account_id,
+        }
+
         await query.answer()
         return
 
@@ -75,8 +100,22 @@ async def handle_dialog_reply_text(
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
 ):
-    conversation_id = context.user_data.get("reply_conversation_id")
-    account_id = context.user_data.get("reply_account_id")
+    reply_to = update.message.reply_to_message if update.message else None
+    reply_to_message_id = reply_to.message_id if reply_to else None
+
+    bindings = _get_reply_bindings(context)
+    binding = bindings.get(str(reply_to_message_id)) if reply_to_message_id else None
+
+    if not binding:
+        await update.message.reply_text(
+            "Нет активного диалога для ответа.\n\n"
+            "Нажми «Ответить» под нужным уведомлением и ответь именно на служебное сообщение.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
+
+    conversation_id = binding.get("conversation_id")
+    account_id = binding.get("account_id")
 
     if not conversation_id or not account_id:
         await update.message.reply_text(
@@ -98,8 +137,6 @@ async def handle_dialog_reply_text(
 
     conversation = get_conversation_by_id(user_id, int(conversation_id))
 
-
-
     await update.message.reply_text("⏳ Отправляю ответ продавцу...")
 
     result = await send_reply_to_conversation(
@@ -110,8 +147,8 @@ async def handle_dialog_reply_text(
         headless=True,
     )
 
-    context.user_data.pop("reply_conversation_id", None)
-    context.user_data.pop("reply_account_id", None)
+    if reply_to_message_id is not None:
+        bindings.pop(str(reply_to_message_id), None)
 
     await update.message.reply_text(
         build_dialog_reply_result_text(conversation, result),

@@ -83,6 +83,9 @@ async def send_message_to_ad(
     result["input_found"] = False
     result["send_button_found"] = False
     result["daily_limit_reached"] = False
+    result["personal_data_warning_possible"] = False
+    result["personal_data_warning_handled"] = False
+    result["submit_button_was_disabled_before_click"] = None
     result["recovered_by_reload"] = False
     result["timings_ms"] = {}
     result["final_message_text"] = message_text
@@ -261,13 +264,27 @@ async def send_message_to_ad(
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first
-            result["submit_button_visible_before_click"] = (
-                await submit_btn.count() > 0 and await submit_btn.is_visible()
-            )
+            submit_btn_exists = await submit_btn.count() > 0
+            submit_btn_visible = submit_btn_exists and await submit_btn.is_visible()
+
+            result["submit_button_visible_before_click"] = submit_btn_visible
             result["submit_button_text_before_click"] = await safe_locator_text(submit_btn)
+
+            disabled_attr_before = await submit_btn.get_attribute("disabled") if submit_btn_exists else None
+            aria_disabled_before = await submit_btn.get_attribute("aria-disabled") if submit_btn_exists else None
+
+            submit_disabled_before = (
+                    disabled_attr_before is not None
+                    or (aria_disabled_before or "").lower() == "true"
+            )
+
+            result["submit_button_was_disabled_before_click"] = submit_disabled_before
+            result["personal_data_warning_possible"] = bool(submit_btn_visible and submit_disabled_before)
         except Exception:
             result["submit_button_visible_before_click"] = None
             result["submit_button_text_before_click"] = None
+            result["submit_button_was_disabled_before_click"] = None
+            result["personal_data_warning_possible"] = False
 
         t_step = time.perf_counter()
         send_clicked = await click_send_button(page, input_locator)
@@ -276,10 +293,22 @@ async def send_message_to_ad(
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first
-            result["submit_button_visible_after_click"] = (
-                await submit_btn.count() > 0 and await submit_btn.is_visible()
-            )
+            submit_btn_exists = await submit_btn.count() > 0
+            submit_btn_visible_after = submit_btn_exists and await submit_btn.is_visible()
+
+            result["submit_button_visible_after_click"] = submit_btn_visible_after
             result["submit_button_text_after_click"] = await safe_locator_text(submit_btn)
+
+            disabled_attr_after = await submit_btn.get_attribute("disabled") if submit_btn_exists else None
+            aria_disabled_after = await submit_btn.get_attribute("aria-disabled") if submit_btn_exists else None
+
+            submit_disabled_after = (
+                    disabled_attr_after is not None
+                    or (aria_disabled_after or "").lower() == "true"
+            )
+
+            if result.get("personal_data_warning_possible") and not submit_disabled_after:
+                result["personal_data_warning_handled"] = True
         except Exception:
             result["submit_button_visible_after_click"] = None
             result["submit_button_text_after_click"] = None
@@ -300,7 +329,15 @@ async def send_message_to_ad(
                 return result
 
             result["status"] = "send_button_not_found"
-            result["error"] = "Не найдена кнопка отправки сообщения"
+
+            if result.get("personal_data_warning_possible") and not result.get("personal_data_warning_handled"):
+                result["error"] = (
+                    "OLX показал предупреждение о персональных данных и не дал отправить "
+                    "сообщение автоматически."
+                )
+            else:
+                result["error"] = "Не удалось нажать кнопку отправки сообщения"
+
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
             await save_debug_artifacts(page, result, prefix="send_button_not_found")
             return result
@@ -343,9 +380,16 @@ async def send_message_to_ad(
             return result
 
         result["status"] = "send_clicked_unverified"
-        result["error"] = (
-            "Кнопка отправки была нажата, но подтверждение реальной отправки не получено"
-        )
+
+        if result.get("personal_data_warning_possible") and not result.get("personal_data_warning_handled"):
+            result["error"] = (
+                "OLX показал предупреждение о персональных данных. Отправка началась, "
+                "но сайт не подтвердил, что сообщение ушло."
+            )
+        else:
+            result["error"] = (
+                "Сообщение не удалось подтвердить автоматически. Возможно, OLX не принял отправку."
+            )
         result["timings_ms"]["total"] = _elapsed_ms(t_total)
         await save_debug_artifacts(page, result, prefix="send_clicked_unverified")
         return result

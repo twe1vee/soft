@@ -5,12 +5,16 @@ import random
 import time
 
 from db import (
+    update_account_status,
     get_account_by_id,
     get_active_users,
     get_proxy_by_id,
     get_user_accounts,
 )
-from db.accounts import get_stale_accounts_with_profiles
+from db.accounts import (
+    get_expired_write_blocked_accounts_with_profiles,
+    get_stale_accounts_with_profiles,
+)
 from olx.account_runtime import close_account_runtime, close_idle_account_runtimes
 from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
@@ -18,6 +22,8 @@ from olx.profile_manager_gologin import (
     AccountRuntimeBlockedError,
     GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
     cleanup_stale_gologin_profiles,
+    WRITE_BLOCKED_DELETE_SECONDS,
+    cleanup_expired_write_blocked_accounts,
 )
 
 DIALOGS_POLL_INTERVAL_MIN_SECONDS = 30
@@ -32,6 +38,7 @@ ALIVE_ACCOUNT_STATUSES = {
     "working",
     "write_limited",
     "loading_retry",
+    "write_blocked",
 }
 
 
@@ -175,14 +182,40 @@ async def run_dialogs_polling_for_user(
     )
 
     for item in account_results:
+        account_id = item.get("account_id")
+        status = (item.get("status") or "").strip().lower()
+
         print(
             f"[dialogs_jobs] account_result user_id={user_id} "
-            f"account_id={item.get('account_id')} "
-            f"status={item.get('status')} "
+            f"account_id={account_id} "
+            f"status={status} "
             f"parsed={item.get('parsed_dialogs_count')} "
             f"new_incoming={item.get('new_incoming_count')} "
             f"error={item.get('error')}"
         )
+
+        if not account_id:
+            continue
+
+        try:
+            if status in {"not_logged_in", "cloudfront_blocked"}:
+                update_account_status(user_id, int(account_id), "dead")
+                print(
+                    f"[dialogs_jobs] account_marked_dead "
+                    f"user_id={user_id} account_id={account_id} reason={status}"
+                )
+            elif status == "ok":
+                update_account_status(user_id, int(account_id), "working")
+                print(
+                    f"[dialogs_jobs] account_marked_working "
+                    f"user_id={user_id} account_id={account_id}"
+                )
+        except Exception as exc:
+            print(
+                f"[dialogs_jobs] account_status_update_failed "
+                f"user_id={user_id} account_id={account_id} "
+                f"status={status} error={exc}"
+            )
 
     accounts_by_id = {int(a["id"]): a for a in alive_accounts if a.get("id") is not None}
 
@@ -249,11 +282,13 @@ async def _runtime_cleanup_job_callback(context) -> None:
     else:
         print("[account_runtime] cleanup tick no idle runtimes")
 
-
 async def _gologin_profile_cleanup_job_callback(context) -> None:
     try:
         stale_accounts = get_stale_accounts_with_profiles(
             GOLOGIN_PROFILE_IDLE_DELETE_SECONDS
+        )
+        expired_write_blocked = get_expired_write_blocked_accounts_with_profiles(
+            WRITE_BLOCKED_DELETE_SECONDS
         )
 
         if stale_accounts:
@@ -267,8 +302,24 @@ async def _gologin_profile_cleanup_job_callback(context) -> None:
                 f"idle_seconds={GOLOGIN_PROFILE_IDLE_DELETE_SECONDS}"
             )
 
-        for item in stale_accounts:
-            account_id = int(item["id"])
+        if expired_write_blocked:
+            print(
+                f"[gologin_cleanup] expired_write_blocked_found={len(expired_write_blocked)} "
+                f"grace_seconds={WRITE_BLOCKED_DELETE_SECONDS}"
+            )
+        else:
+            print(
+                f"[gologin_cleanup] no expired write_blocked accounts "
+                f"grace_seconds={WRITE_BLOCKED_DELETE_SECONDS}"
+            )
+
+        account_ids_to_preclose = {
+            int(item["id"]) for item in stale_accounts
+        } | {
+            int(item["id"]) for item in expired_write_blocked
+        }
+
+        for account_id in sorted(account_ids_to_preclose):
             closed = await close_account_runtime(
                 account_id,
                 reason="stale_account_cleanup",
@@ -278,18 +329,28 @@ async def _gologin_profile_cleanup_job_callback(context) -> None:
                 f"closed_runtime={closed}"
             )
 
-        result = await asyncio.to_thread(
+        stale_result = await asyncio.to_thread(
             cleanup_stale_gologin_profiles,
             idle_seconds=GOLOGIN_PROFILE_IDLE_DELETE_SECONDS,
         )
         print(
-            f"[gologin_cleanup] found={result.get('found_count', 0)} "
-            f"deleted={result.get('deleted_count', 0)} "
-            f"failed={result.get('failed_count', 0)}"
+            f"[gologin_cleanup] stale found={stale_result.get('found_count', 0)} "
+            f"deleted={stale_result.get('deleted_count', 0)} "
+            f"failed={stale_result.get('failed_count', 0)}"
         )
+
+        write_blocked_result = await asyncio.to_thread(
+            cleanup_expired_write_blocked_accounts,
+            grace_seconds=WRITE_BLOCKED_DELETE_SECONDS,
+        )
+        print(
+            f"[gologin_cleanup] write_blocked found={write_blocked_result.get('found_count', 0)} "
+            f"deleted={write_blocked_result.get('deleted_count', 0)} "
+            f"failed={write_blocked_result.get('failed_count', 0)}"
+        )
+
     except Exception as exc:
         print(f"[gologin_cleanup] failed error={exc}")
-
 
 def start_dialogs_jobs(application) -> None:
     if application.job_queue is None:

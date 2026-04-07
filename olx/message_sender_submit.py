@@ -145,12 +145,63 @@ async def _is_clickable_send_button(locator) -> bool:
     return True
 
 
+async def _click_share_personal_data_warning_if_present(page) -> bool:
+    try:
+        warning_btn = page.locator(
+            'button[data-clickoutsideidentifier="fraud-got-it"][data-button-variant="tertiary"]'
+        ).filter(has_text="Sim, partilhar dados pessoais").first
+
+        if await warning_btn.count() == 0:
+            return False
+
+        if not await warning_btn.is_visible():
+            return False
+
+        try:
+            await warning_btn.scroll_into_view_if_needed()
+        except Exception:
+            pass
+
+        try:
+            await warning_btn.click(timeout=2500)
+        except Exception:
+            try:
+                await warning_btn.click(force=True, timeout=2500)
+            except Exception:
+                return False
+
+        await page.wait_for_timeout(800)
+        return True
+
+    except Exception:
+        return False
+
+
+async def _try_unblock_send_button_by_warning(page) -> bool:
+    clicked = await _click_share_personal_data_warning_if_present(page)
+    if not clicked:
+        return False
+
+    for selector in STRICT_SEND_BUTTON_SELECTORS:
+        locator = page.locator(selector).first
+        if await _is_clickable_send_button(locator):
+            return True
+
+    try:
+        submit_btn = page.locator('button[aria-label="Submit message"]').first
+        return await _is_clickable_send_button(submit_btn)
+    except Exception:
+        return False
+
+
 async def click_send_button(
     page,
     input_locator,
     *,
     market_code: str = DEFAULT_MESSAGE_MARKET,
 ) -> bool:
+    warning_unblock_attempted = False
+
     for selector in STRICT_SEND_BUTTON_SELECTORS:
         locator = page.locator(selector).first
 
@@ -160,7 +211,12 @@ async def click_send_button(
             pass
 
         if not await _is_clickable_send_button(locator):
-            continue
+            if not warning_unblock_attempted:
+                warning_unblock_attempted = True
+                await _try_unblock_send_button_by_warning(page)
+
+            if not await _is_clickable_send_button(locator):
+                continue
 
         try:
             await locator.scroll_into_view_if_needed()
@@ -210,7 +266,12 @@ async def click_send_button(
             item = locator.nth(i)
 
             if not await _is_clickable_send_button(item):
-                continue
+                if not warning_unblock_attempted:
+                    warning_unblock_attempted = True
+                    await _try_unblock_send_button_by_warning(page)
+
+                if not await _is_clickable_send_button(item):
+                    continue
 
             try:
                 item_type = await item.get_attribute("type")

@@ -212,22 +212,9 @@ def build_account_check_result_text(account: dict, proxy: dict, result: dict) ->
 
     lines = [
         "🔎 Проверка аккаунта завершена\n",
-        f"Аккаунт: {profile_name}",
         f"Статус: {ui_status}",
-        f"Engine: {browser_engine}",
-        f"GoLogin profile: {gologin_profile_id}",
         f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=60)}",
-        f"Final URL: {final_url}",
     ]
-
-    if result.get("page_title"):
-        lines.append(f"Title: {result['page_title']}")
-
-    if result.get("body_length") is not None:
-        lines.append(f"Body length: {result['body_length']}")
-
-    if result.get("attempts_used"):
-        lines.append(f"Attempts: {result['attempts_used']}")
 
     if error:
         lines.append(f"Ошибка: {error}")

@@ -137,6 +137,11 @@ async def _send_reply_once(
         result["error"] = "Диалог не найден"
         return result
 
+    result["seller_name"] = conversation.get("seller_name")
+    result["ad_title"] = conversation.get("ad_title")
+    result["ad_url"] = conversation.get("ad_url")
+    result["conversation_url"] = conversation.get("conversation_url")
+
     account = get_account_by_id(user_id, account_id)
     if not account:
         result["status"] = "account_not_found"
