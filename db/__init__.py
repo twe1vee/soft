@@ -19,6 +19,8 @@ from .ads import (
     get_last_ad,
     get_ad_by_id,
     get_ad_by_ad_id,
+    get_ad_by_user_account_seller_title,
+    get_ad_by_user_ad_external_id,
 )
 
 from .pending_actions import (
@@ -145,4 +147,6 @@ __all__ = [
     "get_conversation_messages",
     "get_new_conversation_messages_for_user",
     "mark_conversation_message_notified",
+    "get_ad_by_user_account_seller_title",
+    "get_ad_by_user_ad_external_id",
 ]
