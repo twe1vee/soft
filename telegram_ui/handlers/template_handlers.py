@@ -3,8 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from telegram import InputMediaPhoto, Update
-from telegram.error import BadRequest
+from telegram import Update
 from telegram.ext import ContextTypes
 
 from db import (
@@ -54,52 +53,28 @@ def _safe_remove_file(path_value: str | None) -> None:
 async def show_templates_screen(query, user_id: int):
     template = get_active_template(user_id)
     has_image = bool((template or {}).get("image_path"))
-    text = _build_templates_screen_text(template)
-    markup = get_templates_menu_keyboard(has_image=has_image)
 
-    try:
-        await query.edit_message_text(
-            text,
-            reply_markup=markup,
-        )
-        return
-    except BadRequest as exc:
-        error_text = str(exc).lower()
-
-        if "there is no text in the message to edit" not in error_text:
-            raise
-
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-
-    await query.message.chat.send_message(
-        text,
-        reply_markup=markup,
+    await query.edit_message_text(
+        _build_templates_screen_text(template),
+        reply_markup=get_templates_menu_keyboard(has_image=has_image),
     )
 
 
-async def _show_template_preview(query, user_id: int):
+async def _send_template_preview(query, user_id: int):
     template = get_active_template(user_id)
     template_text = (template.get("template_text") if template else "") or "Шаблон не найден."
     image_path = (template.get("image_path") if template else "") or ""
 
     if image_path and os.path.exists(image_path):
-        try:
-            with open(image_path, "rb") as photo_file:
-                await query.edit_message_media(
-                    media=InputMediaPhoto(
-                        media=photo_file,
-                        caption=template_text[:1024] if template_text else "🧩 Текущий шаблон",
-                    ),
-                    reply_markup=get_template_preview_back_keyboard(),
-                )
-            return
-        except Exception:
-            pass
+        with open(image_path, "rb") as photo_file:
+            await query.message.reply_photo(
+                photo=photo_file,
+                caption=template_text[:1024] if template_text else "🧩 Текущий шаблон",
+                reply_markup=get_template_preview_back_keyboard(),
+            )
+        return
 
-    await query.edit_message_text(
+    await query.message.reply_text(
         "👁 Текущий шаблон\n\n"
         f"{template_text}",
         reply_markup=get_template_preview_back_keyboard(),
@@ -112,14 +87,21 @@ async def handle_template_callback(update: Update, context: ContextTypes.DEFAULT
 
     query = update.callback_query
 
-    if data in {"templates:back", "menu:templates"}:
+    if data == "templates:back":
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
+
+    if data == "menu:templates":
         context.user_data.pop("editing_template", None)
         context.user_data.pop("awaiting_template_image", None)
         await show_templates_screen(query, user_id)
         return
 
     if data == "templates:preview":
-        await _show_template_preview(query, user_id)
+        await _send_template_preview(query, user_id)
         return
 
     if data == "templates:edit_text":
@@ -236,17 +218,10 @@ async def handle_template_image_upload(update: Update, context: ContextTypes.DEF
     context.user_data.clear()
 
     template = get_active_template(user_id)
-    template_text = (template.get("template_text") if template else "") or "Шаблон не найден."
+    has_image = bool((template or {}).get("image_path"))
 
-    with open(new_path, "rb") as photo_file:
-        await message.reply_photo(
-            photo=photo_file,
-            caption="✅ Фото шаблона обновлено.",
-        )
-
-    with open(new_path, "rb") as photo_file:
-        await message.reply_photo(
-            photo=photo_file,
-            caption=template_text[:1024] if template_text else "🧩 Текущий шаблон",
-            reply_markup=get_template_preview_back_keyboard(),
-        )
+    await message.reply_text("✅ Фото шаблона обновлено.")
+    await message.reply_text(
+        _build_templates_screen_text(template),
+        reply_markup=get_templates_menu_keyboard(has_image=has_image),
+    )
