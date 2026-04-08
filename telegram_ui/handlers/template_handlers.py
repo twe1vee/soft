@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from telegram import InputMediaPhoto, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from db import (
@@ -53,10 +54,29 @@ def _safe_remove_file(path_value: str | None) -> None:
 async def show_templates_screen(query, user_id: int):
     template = get_active_template(user_id)
     has_image = bool((template or {}).get("image_path"))
+    text = _build_templates_screen_text(template)
+    markup = get_templates_menu_keyboard(has_image=has_image)
 
-    await query.edit_message_text(
-        _build_templates_screen_text(template),
-        reply_markup=get_templates_menu_keyboard(has_image=has_image),
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=markup,
+        )
+        return
+    except BadRequest as exc:
+        error_text = str(exc).lower()
+
+        if "there is no text in the message to edit" not in error_text:
+            raise
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    await query.message.chat.send_message(
+        text,
+        reply_markup=markup,
     )
 
 
@@ -216,10 +236,17 @@ async def handle_template_image_upload(update: Update, context: ContextTypes.DEF
     context.user_data.clear()
 
     template = get_active_template(user_id)
-    has_image = bool((template or {}).get("image_path"))
+    template_text = (template.get("template_text") if template else "") or "Шаблон не найден."
 
-    await message.reply_text("✅ Фото шаблона обновлено.")
-    await message.reply_text(
-        _build_templates_screen_text(template),
-        reply_markup=get_templates_menu_keyboard(has_image=has_image),
-    )
+    with open(new_path, "rb") as photo_file:
+        await message.reply_photo(
+            photo=photo_file,
+            caption="✅ Фото шаблона обновлено.",
+        )
+
+    with open(new_path, "rb") as photo_file:
+        await message.reply_photo(
+            photo=photo_file,
+            caption=template_text[:1024] if template_text else "🧩 Текущий шаблон",
+            reply_markup=get_template_preview_back_keyboard(),
+        )
