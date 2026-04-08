@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from db import (
@@ -50,6 +50,12 @@ def _safe_remove_file(path_value: str | None) -> None:
         pass
 
 
+def _build_template_action_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data="templates:close_temp_message")]
+    ])
+
+
 async def show_templates_screen(query, user_id: int):
     template = get_active_template(user_id)
     has_image = bool((template or {}).get("image_path"))
@@ -87,7 +93,7 @@ async def handle_template_callback(update: Update, context: ContextTypes.DEFAULT
 
     query = update.callback_query
 
-    if data == "templates:back":
+    if data in {"templates:back", "templates:close_temp_message"}:
         try:
             await query.message.delete()
         except Exception:
@@ -119,7 +125,8 @@ async def handle_template_callback(update: Update, context: ContextTypes.DEFAULT
             "{price}\n"
             "{url}\n\n"
             "Текущий текст:\n\n"
-            f"{template_text}"
+            f"{template_text}",
+            reply_markup=_build_template_action_back_keyboard(),
         )
         return
 
@@ -131,7 +138,8 @@ async def handle_template_callback(update: Update, context: ContextTypes.DEFAULT
             "🖼 Загрузка фото для шаблона\n\n"
             "Пришли следующим сообщением фотографию для шаблона.\n\n"
             "Поддерживаются JPG и PNG.\n"
-            "Если фото уже есть, оно будет заменено."
+            "Если фото уже есть, оно будет заменено.",
+            reply_markup=_build_template_action_back_keyboard(),
         )
         return
 
