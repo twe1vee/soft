@@ -17,14 +17,34 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def get_templates_menu_keyboard() -> InlineKeyboardMarkup:
+def get_templates_menu_keyboard(has_image: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("👁 Текущий шаблон", callback_data="templates:preview"),
+        ],
+        [
+            InlineKeyboardButton("✏️ Изменить текст", callback_data="templates:edit_text"),
+        ],
+        [
+            InlineKeyboardButton("🖼 Загрузить фото", callback_data="templates:upload_image"),
+        ],
+    ]
+
+    if has_image:
+        rows.append([
+            InlineKeyboardButton("❌ Удалить фото", callback_data="templates:remove_image"),
+        ])
+
+    rows.append([
+        InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main"),
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def get_template_preview_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✏️ Редактировать шаблон", callback_data="templates:edit"),
-        ],
-        [
-            InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main"),
-        ],
+        [InlineKeyboardButton("⬅️ Назад к шаблону", callback_data="templates:back")]
     ])
 
 

@@ -91,6 +91,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL UNIQUE,
             template_text TEXT NOT NULL,
+            image_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
@@ -187,6 +188,9 @@ def init_db():
 
     if not _column_exists(cursor, "users", "last_active_at"):
         cursor.execute("ALTER TABLE users ADD COLUMN last_active_at INTEGER")
+
+    if not _column_exists(cursor, "templates", "image_path"):
+        cursor.execute("ALTER TABLE templates ADD COLUMN image_path TEXT")
 
     if not _column_exists(cursor, "accounts", "proxy_id"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN proxy_id INTEGER")

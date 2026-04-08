@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from olx.markets.message_helpers import (
     get_button_texts,
@@ -23,6 +24,20 @@ MESSAGE_SURFACE_SELECTORS = [
     '[data-testid="messages-list-container"] [data-testid="sent-message"]',
     '[data-testid="messages-list-container"] [data-cy="chat-message-bubble"]',
     '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
+]
+
+ATTACHMENT_INPUT_SELECTORS = [
+    'input[data-testid="attachment-upload-button"]',
+    'input[data-cy="attachment-upload-button"]',
+    'input#documents-upload',
+]
+
+ATTACHMENT_PREVIEW_SELECTORS = [
+    '[data-testid="attachment-preview-item"]',
+]
+
+ATTACHMENT_REMOVE_SELECTORS = [
+    '[data-testid="attachment-remove"]',
 ]
 
 
@@ -80,6 +95,146 @@ def _build_failed_message_hints(market_code: str = DEFAULT_MESSAGE_MARKET) -> li
 
 def _build_failed_message_selectors(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
     return [f"text={item}" for item in _build_failed_message_hints(market_code)]
+
+
+async def _find_first_visible_locator(page, selectors: list[str]):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if await locator.is_visible():
+                return locator
+        except Exception:
+            continue
+    return None
+
+
+async def _remove_existing_attachment_previews(page) -> int:
+    removed = 0
+
+    try:
+        remove_locator = await _find_first_visible_locator(page, ATTACHMENT_REMOVE_SELECTORS)
+        if remove_locator is None:
+            return removed
+    except Exception:
+        return removed
+
+    for _ in range(5):
+        try:
+            locator = await _find_first_visible_locator(page, ATTACHMENT_REMOVE_SELECTORS)
+            if locator is None:
+                break
+
+            try:
+                await locator.scroll_into_view_if_needed()
+            except Exception:
+                pass
+
+            try:
+                await locator.click(timeout=2000)
+            except Exception:
+                await locator.click(force=True, timeout=2000)
+
+            removed += 1
+            await page.wait_for_timeout(350)
+        except Exception:
+            break
+
+    return removed
+
+
+async def attach_template_image(
+    page,
+    image_path: str,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "template_image_requested": bool((image_path or "").strip()),
+        "template_image_path": image_path,
+        "template_image_attached": False,
+        "template_image_preview_visible": False,
+        "template_image_error": None,
+        "template_image_filename": None,
+        "template_image_removed_old_previews": 0,
+    }
+
+    path_text = (image_path or "").strip()
+    if not path_text:
+        return data
+
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        data["template_image_error"] = f"Файл фото шаблона не найден: {path_text}"
+        return data
+
+    data["template_image_filename"] = path.name
+
+    try:
+        data["template_image_removed_old_previews"] = await _remove_existing_attachment_previews(page)
+    except Exception:
+        pass
+
+    input_locator = None
+    for selector in ATTACHMENT_INPUT_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            input_locator = locator
+            break
+        except Exception:
+            continue
+
+    if input_locator is None:
+        data["template_image_error"] = "Не найден input для загрузки вложения"
+        return data
+
+    try:
+        await input_locator.set_input_files(str(path))
+    except Exception as exc:
+        data["template_image_error"] = f"Не удалось загрузить файл в input: {exc}"
+        return data
+
+    preview_visible = False
+
+    for _ in range(12):
+        await page.wait_for_timeout(500)
+
+        for selector in ATTACHMENT_PREVIEW_SELECTORS:
+            try:
+                previews = page.locator(selector)
+                count = await previews.count()
+                if count <= 0:
+                    continue
+
+                for i in range(min(count, 10)):
+                    item = previews.nth(i)
+                    try:
+                        if not await item.is_visible():
+                            continue
+
+                        filename = (await item.get_attribute("data-filename") or "").strip()
+                        if not filename or filename == path.name:
+                            preview_visible = True
+                            break
+                    except Exception:
+                        continue
+
+                if preview_visible:
+                    break
+            except Exception:
+                continue
+
+        if preview_visible:
+            break
+
+    data["template_image_preview_visible"] = preview_visible
+    data["template_image_attached"] = preview_visible
+
+    if not preview_visible and not data["template_image_error"]:
+        data["template_image_error"] = "OLX не показал preview загруженного вложения"
+
+    return data
 
 
 async def fill_message_input(locator, message_text: str) -> None:

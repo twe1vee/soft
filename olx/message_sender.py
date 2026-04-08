@@ -4,6 +4,7 @@ import time
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from db import get_active_template
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
 from olx.browser_session import dismiss_cookie_banner_if_present
 from olx.chat_open_guard import ensure_chat_open
@@ -18,6 +19,7 @@ from olx.message_sender_page import (
     is_cloudfront_block_page,
 )
 from olx.message_sender_submit import (
+    attach_template_image,
     click_send_button,
     fill_message_input,
     verify_message_sent,
@@ -89,6 +91,14 @@ async def send_message_to_ad(
     result["recovered_by_reload"] = False
     result["timings_ms"] = {}
     result["final_message_text"] = message_text
+
+    result["template_image_requested"] = False
+    result["template_image_path"] = None
+    result["template_image_attached"] = False
+    result["template_image_preview_visible"] = False
+    result["template_image_error"] = None
+    result["template_image_filename"] = None
+    result["template_image_removed_old_previews"] = 0
 
     if not (ad_url or "").strip():
         result["status"] = "invalid_input"
@@ -256,6 +266,29 @@ async def send_message_to_ad(
         result.update(await collect_chat_diagnostics(page))
         result["timings_ms"]["collect_chat_diagnostics_before_fill"] = _elapsed_ms(t_step)
 
+        template_image_path = None
+        if user_id:
+            try:
+                template = get_active_template(int(user_id))
+                template_image_path = (template.get("image_path") if template else "") or None
+            except Exception:
+                template_image_path = None
+
+        if template_image_path:
+            t_step = time.perf_counter()
+            attach_result = await attach_template_image(page, template_image_path)
+            result.update(attach_result)
+            result["timings_ms"]["attach_template_image"] = _elapsed_ms(t_step)
+
+            if not attach_result.get("template_image_attached"):
+                result["status"] = "attachment_upload_failed"
+                result["error"] = attach_result.get("template_image_error") or "Не удалось прикрепить фото шаблона"
+                result["timings_ms"]["total"] = _elapsed_ms(t_total)
+                await save_debug_artifacts(page, result, prefix="attachment_upload_failed")
+                return result
+
+            await page.wait_for_timeout(250)
+
         t_step = time.perf_counter()
         await fill_message_input(input_locator, message_text)
         result["timings_ms"]["fill_message_input"] = _elapsed_ms(t_step)
@@ -274,8 +307,8 @@ async def send_message_to_ad(
             aria_disabled_before = await submit_btn.get_attribute("aria-disabled") if submit_btn_exists else None
 
             submit_disabled_before = (
-                    disabled_attr_before is not None
-                    or (aria_disabled_before or "").lower() == "true"
+                disabled_attr_before is not None
+                or (aria_disabled_before or "").lower() == "true"
             )
 
             result["submit_button_was_disabled_before_click"] = submit_disabled_before
@@ -303,8 +336,8 @@ async def send_message_to_ad(
             aria_disabled_after = await submit_btn.get_attribute("aria-disabled") if submit_btn_exists else None
 
             submit_disabled_after = (
-                    disabled_attr_after is not None
-                    or (aria_disabled_after or "").lower() == "true"
+                disabled_attr_after is not None
+                or (aria_disabled_after or "").lower() == "true"
             )
 
             if result.get("personal_data_warning_possible") and not submit_disabled_after:

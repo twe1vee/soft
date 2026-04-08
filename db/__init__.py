@@ -38,6 +38,8 @@ from .templates import (
     ensure_default_template,
     get_active_template,
     update_active_template,
+    update_active_template_image,
+    clear_active_template_image,
 )
 
 from .accounts import (
@@ -113,6 +115,8 @@ __all__ = [
     "ensure_default_template",
     "get_active_template",
     "update_active_template",
+    "update_active_template_image",
+    "clear_active_template_image",
     "create_account",
     "get_account_by_id",
     "get_user_accounts",

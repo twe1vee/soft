@@ -33,6 +33,7 @@ from telegram_ui.handlers.proxy_handlers import (
 from telegram_ui.handlers.template_handlers import (
     handle_template_callback,
     handle_editing_template_text,
+    handle_template_image_upload,
 )
 from telegram_ui.handlers.common import get_current_user
 from telegram_ui.menu import build_back_to_menu_keyboard
@@ -97,11 +98,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_reply_binding = bool(reply_to_message_id and bindings.get(str(reply_to_message_id)))
 
     if (
-            has_reply_binding
-            or (
+        has_reply_binding
+        or (
             context.user_data.get("reply_conversation_id")
             and context.user_data.get("reply_account_id")
-    )
+        )
     ):
         await handle_dialog_reply_text(update, context, text)
         return
@@ -132,6 +133,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["current_user"] = get_current_user(update)
+
+    if context.user_data.get("awaiting_template_image"):
+        await handle_template_image_upload(update, context)
+        return
+
+    await update.message.reply_text("Сейчас это фото не ожидается.")
+
+
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_user"] = get_current_user(update)
 
@@ -144,6 +155,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or context.user_data.get("awaiting_account_cookies_update")
     ):
         await handle_account_cookies_document(update, context)
+        return
+
+    if context.user_data.get("awaiting_template_image"):
+        await handle_template_image_upload(update, context)
         return
 
     await update.message.reply_text("Сейчас этот файл не ожидается.")
