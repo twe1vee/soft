@@ -3,10 +3,13 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from db import get_conversation_by_id
+from db import get_account_by_id, get_conversation_by_id
 from olx.dialogs_reply import send_reply_to_conversation
 from telegram_ui.menu import build_back_to_menu_keyboard
 from telegram_ui.handlers.common import get_current_user
+
+
+DEFAULT_REPLY_MARKET = "olx_pt"
 
 
 def build_dialog_reply_result_text(conversation: dict | None, result: dict) -> str:
@@ -136,6 +139,8 @@ async def handle_dialog_reply_text(
     user_id = current_user["id"]
 
     conversation = get_conversation_by_id(user_id, int(conversation_id))
+    account = get_account_by_id(user_id, int(account_id))
+    market_code = ((account or {}).get("market") or DEFAULT_REPLY_MARKET).strip().lower() or DEFAULT_REPLY_MARKET
 
     await update.message.reply_text("⏳ Отправляю ответ продавцу...")
 
@@ -145,6 +150,7 @@ async def handle_dialog_reply_text(
         account_id=int(account_id),
         message_text=text,
         headless=True,
+        market_code=market_code,
     )
 
     if reply_to_message_id is not None:

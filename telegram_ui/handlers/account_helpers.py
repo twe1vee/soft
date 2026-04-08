@@ -58,6 +58,14 @@ def humanize_proxy_status(status: str | None) -> str:
     return "не проверен"
 
 
+def humanize_account_market(market: str | None) -> str:
+    value = (market or "").strip().lower()
+
+    if value == "olx_pl":
+        return "OLX PL"
+    return "OLX PT"
+
+
 def normalize_account_status_for_db(raw_status: str | None) -> str:
     value = (raw_status or "").strip().lower()
 
@@ -115,7 +123,6 @@ def short_proxy_text(proxy_text: str, max_len: int = 60) -> str:
 
     parts = [p.strip() for p in value.split(":")]
 
-    # host:port:user:pass -> host:port
     if len(parts) >= 2:
         host = parts[0]
         port = parts[1]
@@ -131,9 +138,10 @@ def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
     for index, account in enumerate(accounts, start=1):
         profile_name = account_display_name(account, fallback_index=index)
         status = humanize_account_status(account.get("status"))
+        market = humanize_account_market(account.get("market"))
         keyboard.append([
             InlineKeyboardButton(
-                f"{index}. {profile_name} [{status}]",
+                f"{index}. {profile_name} [{market} | {status}]",
                 callback_data=f"account:open:{account['id']}",
             )
         ])
@@ -146,9 +154,10 @@ def build_accounts_keyboard(accounts: list[dict]) -> InlineKeyboardMarkup:
 
 def build_account_card_keyboard(account_id: int, has_proxy: bool) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(" Проверить аккаунт", callback_data=f"account:check:{account_id}")],
+        [InlineKeyboardButton("🔎 Проверить аккаунт", callback_data=f"account:check:{account_id}")],
+        [InlineKeyboardButton("🌍 Сменить рынок", callback_data=f"account:change_market:{account_id}")],
         [InlineKeyboardButton("✏️ Изменить имя", callback_data=f"account:rename:{account_id}")],
-        [InlineKeyboardButton(" Привязать прокси", callback_data=f"account:bind_proxy:{account_id}")],
+        [InlineKeyboardButton("🔗 Привязать прокси", callback_data=f"account:bind_proxy:{account_id}")],
     ]
 
     if has_proxy:
@@ -156,12 +165,13 @@ def build_account_card_keyboard(account_id: int, has_proxy: bool) -> InlineKeybo
 
     rows.extend([
         [InlineKeyboardButton("♻️ Обновить cookies", callback_data=f"account:update_cookies:{account_id}")],
-        [InlineKeyboardButton(" Удалить аккаунт", callback_data=f"account:delete:{account_id}")],
+        [InlineKeyboardButton("🗑 Удалить аккаунт", callback_data=f"account:delete:{account_id}")],
         [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
-        [InlineKeyboardButton(" Главное меню", callback_data="menu:main")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
     ])
 
     return InlineKeyboardMarkup(rows)
+
 
 def build_account_delete_confirm_keyboard(account_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -190,6 +200,25 @@ def build_account_proxy_select_keyboard(account_id: int, proxies: list[dict]) ->
     return InlineKeyboardMarkup(keyboard)
 
 
+def build_account_market_select_keyboard(
+    *,
+    add_mode: bool,
+    account_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    if add_mode:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇵🇹 OLX PT", callback_data="account:set_market_for_add:olx_pt")],
+            [InlineKeyboardButton("🇵🇱 OLX PL", callback_data="account:set_market_for_add:olx_pl")],
+            [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
+        ])
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇵🇹 OLX PT", callback_data=f"account:set_market:{account_id}:olx_pt")],
+        [InlineKeyboardButton("🇵🇱 OLX PL", callback_data=f"account:set_market:{account_id}:olx_pl")],
+        [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
+    ])
+
+
 def parse_cookies_json(text: str) -> str | None:
     try:
         parsed = json.loads(text)
@@ -205,13 +234,13 @@ def parse_cookies_json(text: str) -> str | None:
 def build_account_check_result_text(account: dict, proxy: dict, result: dict) -> str:
     profile_name = account_display_name(account)
     ui_status = humanize_account_status(result.get("status"))
-    final_url = result.get("final_url") or "—"
+    market_text = humanize_account_market(account.get("market") or result.get("market_code"))
     error = result.get("error")
-    browser_engine = result.get("browser_engine") or account.get("browser_engine") or "—"
-    gologin_profile_id = result.get("gologin_profile_id") or account.get("gologin_profile_id") or "—"
 
     lines = [
         "🔎 Проверка аккаунта завершена\n",
+        f"Аккаунт: {profile_name}",
+        f"Рынок: {market_text}",
         f"Статус: {ui_status}",
         f"Прокси: {short_proxy_text(proxy.get('proxy_text', ''), max_len=60)}",
     ]

@@ -8,6 +8,8 @@ from db import get_active_template
 from olx.account_runtime import close_runtime_page, open_account_runtime_page
 from olx.browser_session import dismiss_cookie_banner_if_present
 from olx.chat_open_guard import ensure_chat_open
+from olx.markets.helpers import extract_url_domain, is_market_domain
+from olx.markets.message_helpers import get_delivery_failed_texts
 from olx.message_sender_chat import collect_chat_diagnostics
 from olx.message_sender_debug import (
     base_result,
@@ -25,17 +27,35 @@ from olx.message_sender_submit import (
     verify_message_sent,
 )
 
+DEFAULT_SEND_MARKET = "olx_pt"
+
 
 def _elapsed_ms(start: float) -> int:
     return int((time.perf_counter() - start) * 1000)
 
 
-async def _has_daily_limit_banner(page) -> bool:
-    phrases = [
-        "atingiste o limite de novas conversas por dia",
-        "limite de novas conversas por dia",
-        "limite de novas conversas",
-    ]
+async def _has_daily_limit_banner(
+    page,
+    *,
+    market_code: str = DEFAULT_SEND_MARKET,
+) -> bool:
+    phrases_map = {
+        "olx_pt": [
+            "atingiste o limite de novas conversas por dia",
+            "limite de novas conversas por dia",
+            "limite de novas conversas",
+        ],
+        "olx_pl": [
+            "osiągnięto limit nowych rozmów na dziś",
+            "osiagnieto limit nowych rozmow na dzis",
+            "limit nowych rozmów dziennie",
+            "limit nowych rozmow dziennie",
+            "limit nowych rozmów",
+            "limit nowych rozmow",
+        ],
+    }
+
+    phrases = phrases_map.get((market_code or "").strip().lower(), phrases_map["olx_pt"])
 
     try:
         body = await page.locator("body").inner_text(timeout=2000)
@@ -57,6 +77,23 @@ async def _has_daily_limit_banner(page) -> bool:
     return False
 
 
+def _detect_market_mismatch(
+    ad_url: str,
+    market_code: str,
+) -> str | None:
+    domain = extract_url_domain(ad_url)
+    if not domain:
+        return None
+
+    if is_market_domain(domain, market_code):
+        return None
+
+    return (
+        f"Ссылка объявления относится к другому рынку: {domain}. "
+        f"Аккаунт работает на рынке {market_code}."
+    )
+
+
 async def send_message_to_ad(
     cookies_json: str,
     proxy_text: str,
@@ -67,6 +104,7 @@ async def send_message_to_ad(
     user_id: int | None = None,
     account_id: int | None = None,
     olx_profile_name: str | None = None,
+    market_code: str = DEFAULT_SEND_MARKET,
 ) -> dict:
     result = base_result()
     result["ad_url"] = ad_url
@@ -91,6 +129,7 @@ async def send_message_to_ad(
     result["recovered_by_reload"] = False
     result["timings_ms"] = {}
     result["final_message_text"] = message_text
+    result["market_code"] = market_code
 
     result["template_image_requested"] = False
     result["template_image_path"] = None
@@ -108,6 +147,12 @@ async def send_message_to_ad(
     if not (message_text or "").strip():
         result["status"] = "invalid_input"
         result["error"] = "Пустой message_text"
+        return result
+
+    market_mismatch_error = _detect_market_mismatch(ad_url, market_code)
+    if market_mismatch_error:
+        result["status"] = "market_mismatch"
+        result["error"] = market_mismatch_error
         return result
 
     page = None
@@ -160,7 +205,7 @@ async def send_message_to_ad(
             await save_debug_artifacts(page, result, prefix="cloudfront_blocked")
             return result
 
-        handled_soft_error = await handle_olx_soft_error_page(page)
+        handled_soft_error = await handle_olx_soft_error_page(page, market_code=market_code)
         result["handled_soft_error_page"] = handled_soft_error
 
         if handled_soft_error:
@@ -192,6 +237,7 @@ async def send_message_to_ad(
             target_url=ad_url,
             allow_reload=True,
             settle_ms=700,
+            market_code=market_code,
         )
         input_locator = chat_open.get("input_locator")
 
@@ -220,7 +266,7 @@ async def send_message_to_ad(
             if key in chat_open:
                 result[key] = chat_open.get(key)
 
-        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page, market_code=market_code)
 
         if chat_open.get("cloudfront_blocked"):
             result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
@@ -320,7 +366,11 @@ async def send_message_to_ad(
             result["personal_data_warning_possible"] = False
 
         t_step = time.perf_counter()
-        send_clicked = await click_send_button(page, input_locator)
+        send_clicked = await click_send_button(
+            page,
+            input_locator,
+            market_code=market_code,
+        )
         result["timings_ms"]["click_send_button"] = _elapsed_ms(t_step)
         result["send_button_found"] = send_clicked
 
@@ -352,7 +402,7 @@ async def send_message_to_ad(
             result["timings_ms"]["collect_chat_diagnostics_send_button_not_found"] = _elapsed_ms(
                 t_step
             )
-            result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+            result["daily_limit_reached"] = await _has_daily_limit_banner(page, market_code=market_code)
 
             if result.get("daily_limit_reached"):
                 result["status"] = "daily_limit_reached"
@@ -378,7 +428,12 @@ async def send_message_to_ad(
         await page.wait_for_timeout(600)
 
         t_step = time.perf_counter()
-        verification = await verify_message_sent(page, input_locator, message_text)
+        verification = await verify_message_sent(
+            page,
+            input_locator,
+            message_text,
+            market_code=market_code,
+        )
         result["timings_ms"]["verify_message_sent"] = _elapsed_ms(t_step)
         result.update(verification)
         result["final_url"] = page.url
@@ -387,7 +442,7 @@ async def send_message_to_ad(
         result.update(await collect_chat_diagnostics(page))
         result["timings_ms"]["collect_chat_diagnostics_after_verify"] = _elapsed_ms(t_step)
 
-        result["daily_limit_reached"] = await _has_daily_limit_banner(page)
+        result["daily_limit_reached"] = await _has_daily_limit_banner(page, market_code=market_code)
 
         if verification.get("delivery_verified"):
             result["ok"] = True
@@ -399,6 +454,11 @@ async def send_message_to_ad(
 
         if verification.get("delivery_failed"):
             reason = verification.get("delivery_failed_reason") or "OLX показал, что сообщение не доставлено"
+
+            for market_hint in get_delivery_failed_texts(market_code):
+                if market_hint and market_hint.lower() in reason.lower():
+                    break
+
             result["status"] = "message_delivery_failed"
             result["error"] = reason
             result["timings_ms"]["total"] = _elapsed_ms(t_total)

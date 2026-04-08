@@ -11,6 +11,7 @@ from db import (
     get_user_proxies,
     update_account_cookies,
     update_account_last_check,
+    update_account_market,
     update_account_profile_name,
     update_account_proxy,
     update_account_status,
@@ -29,8 +30,10 @@ from telegram_ui.handlers.account_helpers import (
     build_account_card_keyboard,
     build_account_check_result_text,
     build_account_delete_confirm_keyboard,
+    build_account_market_select_keyboard,
     build_account_proxy_select_keyboard,
     build_accounts_keyboard,
+    humanize_account_market,
     humanize_account_status,
     normalize_account_status_for_db,
     normalize_proxy_status_from_account_check,
@@ -38,6 +41,9 @@ from telegram_ui.handlers.account_helpers import (
     short_proxy_text,
 )
 from telegram_ui.handlers.common import get_current_user
+
+
+DEFAULT_ACCOUNT_MARKET = "olx_pt"
 
 
 async def safe_edit_message_text(query, text: str, reply_markup=None, **kwargs):
@@ -58,6 +64,11 @@ def _build_not_found_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
     ])
+
+
+def _normalize_market(value: str | None) -> str:
+    raw = (value or DEFAULT_ACCOUNT_MARKET).strip().lower()
+    return raw or DEFAULT_ACCOUNT_MARKET
 
 
 def _build_account_rename_result_text(account: dict, result: dict) -> str:
@@ -166,6 +177,7 @@ async def show_account_card(query, user_id: int, account_id: int):
 
     profile_name = account_display_name(account)
     status = humanize_account_status(account.get("status"))
+    market_text = humanize_account_market(account.get("market"))
     last_check_at = account.get("last_check_at") or "ещё не проверялся"
 
     proxy_text = "не привязан"
@@ -177,13 +189,11 @@ async def show_account_card(query, user_id: int, account_id: int):
         else:
             proxy_text = "не найден"
 
-    browser_engine = account.get("browser_engine") or "—"
-    gologin_profile_id = account.get("gologin_profile_id") or "—"
-
     await safe_edit_message_text(
         query,
         "📄 Карточка аккаунта\n\n"
         f"Аккаунт: {profile_name}\n"
+        f"Рынок: {market_text}\n"
         f"Статус: {status}\n"
         f"Прокси: {proxy_text}\n\n"
         f"Последняя проверка: {last_check_at}",
@@ -245,6 +255,8 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         await safe_edit_message_text(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
         return
 
+    market_code = _normalize_market(account.get("market"))
+
     proxy_id = account.get("proxy_id")
     if not proxy_id:
         update_account_status(user_id, account_id, "missing_proxy")
@@ -298,6 +310,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         query,
         "⏳ Проверяю аккаунт через браузер и привязанный proxy...\n\n"
         f"Аккаунт: {account_display_name(account)}\n"
+        f"Рынок: {humanize_account_market(market_code)}\n"
         f"Прокси: {short_proxy_text(proxy_text or '', max_len=50)}"
     )
 
@@ -308,6 +321,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         user_id=user_id,
         account_id=account_id,
         olx_profile_name=account.get("olx_profile_name"),
+        market_code=market_code,
     )
 
     profile_name = (result.get("profile_name") or "").strip()
@@ -338,12 +352,27 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data == "account:add":
         context.user_data.clear()
+        await safe_edit_message_text(
+            query,
+            "➕ Добавление аккаунта\n\n"
+            "Сначала выбери рынок аккаунта.\n\n"
+            "После этого я попрошу прислать cookies JSON.",
+            reply_markup=build_account_market_select_keyboard(add_mode=True),
+        )
+        return
+
+    if data.startswith("account:set_market_for_add:"):
+        market_code = _normalize_market(data.split(":")[-1])
+
+        context.user_data.clear()
         context.user_data["awaiting_account_cookies"] = True
+        context.user_data["awaiting_account_market"] = market_code
 
         await safe_edit_message_text(
             query,
             "➕ Добавление аккаунта\n\n"
-            "Пришли cookies одним из способов:\n"
+            f"Рынок: {humanize_account_market(market_code)}\n\n"
+            "Теперь пришли cookies одним из способов:\n"
             "1. JSON текстом в сообщении\n"
             "2. .txt файлом с JSON внутри\n\n"
             "После получения я сохраню новый аккаунт в базу.",
@@ -356,6 +385,45 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("account:open:"):
         account_id = int(data.split(":")[-1])
+        await show_account_card(query, user_id, account_id)
+        return
+
+    if data.startswith("account:change_market:"):
+        account_id = int(data.split(":")[-1])
+        account = get_account_by_id(user_id, account_id)
+
+        if not account:
+            await safe_edit_message_text(
+                query,
+                "Аккаунт не найден.",
+                reply_markup=_build_not_found_markup(),
+            )
+            return
+
+        await safe_edit_message_text(
+            query,
+            "🌍 Смена рынка аккаунта\n\n"
+            f"Аккаунт: {account_display_name(account)}\n"
+            f"Текущий рынок: {humanize_account_market(account.get('market'))}\n\n"
+            "Выбери новый рынок:",
+            reply_markup=build_account_market_select_keyboard(add_mode=False, account_id=account_id),
+        )
+        return
+
+    if data.startswith("account:set_market:"):
+        _, _, account_id_str, market_code = data.split(":")
+        account_id = int(account_id_str)
+
+        account = get_account_by_id(user_id, account_id)
+        if not account:
+            await safe_edit_message_text(
+                query,
+                "Аккаунт не найден.",
+                reply_markup=_build_not_found_markup(),
+            )
+            return
+
+        update_account_market(user_id, account_id, _normalize_market(market_code))
         await show_account_card(query, user_id, account_id)
         return
 
@@ -477,7 +545,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             for index, item in enumerate(accounts, start=1):
                 profile_name = account_display_name(item, fallback_index=index)
                 status = humanize_account_status(item.get("status"))
-                text += f"{index}. {profile_name} [{status}]\n"
+                market = humanize_account_market(item.get("market"))
+                text += f"{index}. {profile_name} [{market} | {status}]\n"
         else:
             text = "✅ Аккаунт удалён."
             if cleanup_note:
@@ -594,9 +663,12 @@ async def handle_account_cookies_text(update: Update, context: ContextTypes.DEFA
             )
             return
 
-        create_account(user_id=user_id, cookies_json=normalized)
+        market_code = _normalize_market(context.user_data.get("awaiting_account_market"))
+        create_account(user_id=user_id, cookies_json=normalized, market=market_code)
         context.user_data.clear()
-        await update.message.reply_text("✅ Аккаунт добавлен.")
+        await update.message.reply_text(
+            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}"
+        )
         return
 
     account_id = context.user_data.get("awaiting_account_cookies_update")
@@ -657,9 +729,12 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
         return
 
     if context.user_data.get("awaiting_account_cookies"):
-        create_account(user_id=user_id, cookies_json=normalized)
+        market_code = _normalize_market(context.user_data.get("awaiting_account_market"))
+        create_account(user_id=user_id, cookies_json=normalized, market=market_code)
         context.user_data.clear()
-        await update.message.reply_text("✅ Аккаунт добавлен.")
+        await update.message.reply_text(
+            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}"
+        )
         return
 
     account_id = context.user_data.get("awaiting_account_cookies_update")

@@ -30,6 +30,11 @@ def _normalize_text(value: str | None) -> str:
     return (value or "").strip()
 
 
+def _normalize_market_code(value: str | None) -> str:
+    raw = (value or DEFAULT_DIALOGS_MARKET).strip().lower()
+    return raw or DEFAULT_DIALOGS_MARKET
+
+
 def _is_incoming_candidate(item: dict[str, Any]) -> bool:
     if not _normalize_text(item.get("last_message_text")):
         return False
@@ -55,6 +60,8 @@ async def check_account_dialogs(
     olx_profile_name: str | None = None,
     market_code: str = DEFAULT_DIALOGS_MARKET,
 ) -> dict[str, Any]:
+    market_code = _normalize_market_code(market_code)
+
     result: dict[str, Any] = {
         "ok": False,
         "status": "unknown",
@@ -180,7 +187,7 @@ async def check_account_dialogs(
                 )
                 return result
 
-            if await has_login_hint(page):
+            if await has_login_hint(page, market_code=market_code):
                 result["login_hint_found"] = True
 
                 dialog_rows_found = int((page_info or {}).get("dialog_rows_found") or 0)
@@ -291,7 +298,7 @@ async def check_account_dialogs(
 
                 resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
                 resolved_ad_external_id = item.get("ad_external_id") or (
-                        existing_conversation or {}
+                    existing_conversation or {}
                 ).get("ad_external_id")
                 resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
                 resolved_ad_db_id = (existing_conversation or {}).get("ad_id")
@@ -461,6 +468,8 @@ async def check_user_dialogs(
             )
             continue
 
+        account_market = _normalize_market_code(fresh_account.get("market") or market_code)
+
         cookies_json = fresh_account.get("cookies_json")
         proxy_id = fresh_account.get("proxy_id")
         proxy = proxies_by_id.get(proxy_id) if proxy_id else None
@@ -472,13 +481,13 @@ async def check_user_dialogs(
                 "ok": False,
                 "status": "skipped_missing_credentials",
                 "account_id": account_id,
-                "market_code": market_code,
+                "market_code": account_market,
             }
             summary["account_results"].append(skipped)
             print(
                 f"[dialogs_checker] account_summary "
                 f"user_id={user_id} account_id={account_id} "
-                f"status={skipped['status']} market={market_code}"
+                f"status={skipped['status']} market={account_market}"
             )
             continue
 
@@ -489,7 +498,7 @@ async def check_user_dialogs(
             proxy_text=proxy_text,
             headless=headless,
             olx_profile_name=fresh_account.get("olx_profile_name"),
-            market_code=market_code,
+            market_code=account_market,
         )
 
         summary["accounts_checked"] += 1
@@ -505,7 +514,7 @@ async def check_user_dialogs(
             f"new_incoming={account_result.get('new_incoming_count')} "
             f"final_url={account_result.get('final_url')} "
             f"error={account_result.get('error')} "
-            f"market={market_code}"
+            f"market={account_result.get('market_code')}"
         )
 
     return summary

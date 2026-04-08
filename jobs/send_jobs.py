@@ -41,6 +41,7 @@ REQUEUE_RETRY_MIN_SECONDS = 3
 REQUEUE_RETRY_MAX_SECONDS = 6
 
 DEFAULT_MAX_ATTEMPTS = 2
+DEFAULT_SEND_MARKET = "olx_pt"
 
 
 @dataclass(slots=True)
@@ -282,6 +283,8 @@ class SendJobsManager:
                 await self._notify_result(job=job, result=result, ad=ad, account=None, proxy=None)
                 return
 
+            market_code = (account.get("market") or DEFAULT_SEND_MARKET).strip().lower() or DEFAULT_SEND_MARKET
+
             cookies_json = account.get("cookies_json")
             if not cookies_json:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_missing_cookies")
@@ -292,6 +295,7 @@ class SendJobsManager:
                     ad=ad,
                     account=account,
                 )
+                result["market_code"] = market_code
                 job.result = result
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -309,6 +313,7 @@ class SendJobsManager:
                     account=account,
                     proxy=proxy,
                 )
+                result["market_code"] = market_code
                 job.result = result
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -328,6 +333,7 @@ class SendJobsManager:
                     account=account,
                     proxy=proxy,
                 )
+                result["market_code"] = market_code
                 job.result = result
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -344,6 +350,7 @@ class SendJobsManager:
                     account=account,
                     proxy=proxy,
                 )
+                result["market_code"] = market_code
                 job.result = result
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -365,7 +372,10 @@ class SendJobsManager:
                 user_id=job.user_id,
                 account_id=job.account_id,
                 olx_profile_name=account.get("olx_profile_name"),
+                market_code=market_code,
             )
+
+            result["market_code"] = result.get("market_code") or market_code
 
             send_status = result.get("status") or "unknown_error"
             retry_used = job.attempt > 1
@@ -461,6 +471,7 @@ class SendJobsManager:
                 f"[send_jobs] worker_done worker={worker_no} "
                 f"job_id={job.job_id} status={job.status} "
                 f"send_status={send_status} account_status={result.get('account_status')} "
+                f"market={result.get('market_code')} "
                 f"attempt={job.attempt}/{job.max_attempts} {_build_queue_metrics(self)}"
             )
 

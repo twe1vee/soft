@@ -129,7 +129,8 @@ async def run_dialogs_polling_for_user(
                 f"account_id={fresh_account.get('id')} "
                 f"proxy_id={fresh_account.get('proxy_id')} "
                 f"status={fresh_account.get('status')} "
-                f"has_cookies={bool(fresh_account.get('cookies_json'))}"
+                f"has_cookies={bool(fresh_account.get('cookies_json'))} "
+                f"market={fresh_account.get('market')}"
             )
             continue
 
@@ -138,19 +139,23 @@ async def run_dialogs_polling_for_user(
         if not proxy or not proxy.get("proxy_text"):
             print(
                 f"[dialogs_jobs] skip account_id={account_id} "
-                f"proxy_id={proxy_id} reason=proxy_not_found"
+                f"proxy_id={proxy_id} reason=proxy_not_found "
+                f"market={fresh_account.get('market')}"
             )
             continue
 
         print(
             f"[dialogs_jobs] alive_account user_id={user_id} "
             f"account_id={fresh_account.get('id')} proxy_id={proxy_id} "
-            f"status={fresh_account.get('status')}"
+            f"status={fresh_account.get('status')} market={fresh_account.get('market')}"
         )
 
         alive_accounts.append(fresh_account)
         proxies_by_id[int(proxy_id)] = proxy
-        print(f"[dialogs_jobs] proxy loaded account_id={account_id} proxy_id={proxy_id}")
+        print(
+            f"[dialogs_jobs] proxy loaded "
+            f"account_id={account_id} proxy_id={proxy_id} market={fresh_account.get('market')}"
+        )
 
     print(
         f"[dialogs_jobs] polling user_id={user_id} "
@@ -191,7 +196,8 @@ async def run_dialogs_polling_for_user(
             f"status={status} "
             f"parsed={item.get('parsed_dialogs_count')} "
             f"new_incoming={item.get('new_incoming_count')} "
-            f"error={item.get('error')}"
+            f"error={item.get('error')} "
+            f"market={item.get('market_code')}"
         )
 
         if not account_id:
@@ -282,6 +288,7 @@ async def _runtime_cleanup_job_callback(context) -> None:
     else:
         print("[account_runtime] cleanup tick no idle runtimes")
 
+
 async def _gologin_profile_cleanup_job_callback(context) -> None:
     try:
         stale_accounts = get_stale_accounts_with_profiles(
@@ -351,6 +358,7 @@ async def _gologin_profile_cleanup_job_callback(context) -> None:
 
     except Exception as exc:
         print(f"[gologin_cleanup] failed error={exc}")
+
 
 def start_dialogs_jobs(application) -> None:
     if application.job_queue is None:

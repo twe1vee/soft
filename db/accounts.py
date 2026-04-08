@@ -19,6 +19,24 @@ def ensure_accounts_last_used_column():
     conn.close()
 
 
+def ensure_accounts_market_column():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(accounts)")
+    columns = {str(row["name"]) for row in cursor.fetchall()}
+    if "market" not in columns:
+        cursor.execute(
+            "ALTER TABLE accounts ADD COLUMN market TEXT NOT NULL DEFAULT 'olx_pt'"
+        )
+        conn.commit()
+    conn.close()
+
+
+def _normalize_market(market: str | None) -> str:
+    value = (market or "olx_pt").strip().lower()
+    return value or "olx_pt"
+
+
 def touch_account_last_used(account_id: int, ts: int | None = None) -> bool:
     ensure_accounts_last_used_column()
 
@@ -60,13 +78,14 @@ def clear_account_gologin_binding_by_account_id(account_id: int) -> bool:
 
 def get_stale_accounts_with_profiles(idle_seconds: int) -> list[dict]:
     ensure_accounts_last_used_column()
+    ensure_accounts_market_column()
     threshold = int(time.time()) - int(idle_seconds)
 
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, user_id, olx_profile_name, gologin_profile_id, gologin_profile_name, last_used_at
+        SELECT id, user_id, olx_profile_name, gologin_profile_id, gologin_profile_name, last_used_at, market
         FROM accounts
         WHERE gologin_profile_id IS NOT NULL
           AND TRIM(gologin_profile_id) != ''
@@ -82,6 +101,7 @@ def get_stale_accounts_with_profiles(idle_seconds: int) -> list[dict]:
 
 
 def get_stale_user_inactive_accounts_with_profiles(idle_seconds: int) -> list[dict]:
+    ensure_accounts_market_column()
     threshold = int(time.time()) - int(idle_seconds)
 
     conn = get_connection()
@@ -94,6 +114,7 @@ def get_stale_user_inactive_accounts_with_profiles(idle_seconds: int) -> list[di
             a.olx_profile_name,
             a.gologin_profile_id,
             a.gologin_profile_name,
+            a.market,
             u.last_active_at AS user_last_active_at
         FROM accounts a
         INNER JOIN users u ON u.id = a.user_id
@@ -116,10 +137,13 @@ def create_account(
     status: str = "new",
     olx_profile_name: str | None = None,
     browser_engine: str = "gologin",
+    market: str = "olx_pt",
 ) -> int:
     ensure_accounts_last_used_column()
+    ensure_accounts_market_column()
 
     now_ts = int(time.time())
+    normalized_market = _normalize_market(market)
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -131,9 +155,10 @@ def create_account(
             cookies_json,
             status,
             browser_engine,
-            last_used_at
+            last_used_at,
+            market
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -142,6 +167,7 @@ def create_account(
             status,
             browser_engine,
             now_ts,
+            normalized_market,
         ),
     )
     account_id = cursor.lastrowid
@@ -151,6 +177,8 @@ def create_account(
 
 
 def get_account_by_id(user_id: int, account_id: int) -> dict | None:
+    ensure_accounts_market_column()
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -167,6 +195,8 @@ def get_account_by_id(user_id: int, account_id: int) -> dict | None:
 
 
 def get_user_accounts(user_id: int) -> list[dict]:
+    ensure_accounts_market_column()
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -265,6 +295,25 @@ def update_account_proxy(user_id: int, account_id: int, proxy_id: int | None):
         WHERE id = ? AND user_id = ?
         """,
         (proxy_id, account_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_account_market(user_id: int, account_id: int, market: str):
+    ensure_accounts_market_column()
+
+    normalized_market = _normalize_market(market)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE accounts
+        SET market = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND user_id = ?
+        """,
+        (normalized_market, account_id, user_id),
     )
     conn.commit()
     conn.close()
@@ -372,6 +421,7 @@ def delete_account(user_id: int, account_id: int):
     conn.commit()
     conn.close()
 
+
 def ensure_accounts_write_blocked_column():
     conn = get_connection()
     cursor = conn.cursor()
@@ -425,6 +475,7 @@ def clear_account_write_blocked(user_id: int, account_id: int):
 def get_expired_write_blocked_accounts_with_profiles(grace_seconds: int) -> list[dict]:
     ensure_accounts_last_used_column()
     ensure_accounts_write_blocked_column()
+    ensure_accounts_market_column()
 
     threshold = int(time.time()) - int(grace_seconds)
 
@@ -440,7 +491,8 @@ def get_expired_write_blocked_accounts_with_profiles(grace_seconds: int) -> list
             gologin_profile_id,
             gologin_profile_name,
             write_blocked_at,
-            last_used_at
+            last_used_at,
+            market
         FROM accounts
         WHERE status = 'write_blocked'
           AND write_blocked_at IS NOT NULL

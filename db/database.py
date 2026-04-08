@@ -126,6 +126,7 @@ def init_db():
             browser_engine TEXT NOT NULL DEFAULT 'gologin',
             gologin_profile_id TEXT,
             gologin_profile_name TEXT,
+            market TEXT NOT NULL DEFAULT 'olx_pt',
             last_check_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -210,6 +211,9 @@ def init_db():
     if not _column_exists(cursor, "accounts", "gologin_profile_name"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_name TEXT")
 
+    if not _column_exists(cursor, "accounts", "market"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN market TEXT NOT NULL DEFAULT 'olx_pt'")
+
     if not _column_exists(cursor, "proxies", "created_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -244,6 +248,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_proxy_id ON accounts(proxy_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_gologin_profile_id ON accounts(gologin_profile_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_browser_engine ON accounts(browser_engine)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_market ON accounts(market)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_id ON proxies(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_status ON proxies(user_id, status)")
 
