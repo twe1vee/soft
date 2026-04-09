@@ -418,10 +418,14 @@ class SendJobsManager:
                 if first_try_status:
                     result.setdefault("first_try_status", first_try_status)
 
-            account_status = map_send_status_to_account_status(
-                send_status,
-                retry_used=retry_used,
-            )
+            if send_status == "send_clicked_unverified":
+                account_status = "write_blocked" if retry_used else "loading_retry"
+            else:
+                account_status = map_send_status_to_account_status(
+                    send_status,
+                    retry_used=retry_used,
+                )
+
             if account_status:
                 update_account_status(job.user_id, job.account_id, account_status)
                 result["account_status"] = account_status
