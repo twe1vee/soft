@@ -366,13 +366,16 @@ async def send_message_to_ad(
             result["personal_data_warning_possible"] = False
 
         t_step = time.perf_counter()
-        send_clicked = await click_send_button(
+        send_click_result = await click_send_button(
             page,
             input_locator,
             market_code=market_code,
         )
         result["timings_ms"]["click_send_button"] = _elapsed_ms(t_step)
-        result["send_button_found"] = send_clicked
+        result["send_button_found"] = bool(send_click_result.get("send_clicked"))
+        if send_click_result.get("personal_data_warning_handled"):
+            result["personal_data_warning_handled"] = True
+        send_clicked = bool(send_click_result.get("send_clicked"))
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first

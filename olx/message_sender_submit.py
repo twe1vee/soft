@@ -301,35 +301,230 @@ async def _is_clickable_send_button(locator) -> bool:
 
 
 async def _click_share_personal_data_warning_if_present(page) -> bool:
-    try:
-        warning_btn = page.locator(
+    candidates = [
+        page.locator(
             'button[data-clickoutsideidentifier="fraud-got-it"][data-button-variant="tertiary"]'
-        ).filter(has_text="Sim, partilhar dados pessoais").first
+        ).filter(has_text="Partilhar").first,
+        page.locator(
+            'button[data-clickoutsideidentifier="fraud-got-it"][data-button-variant="tertiary"]'
+        ).first,
+        page.get_by_role("button", name="Partilhar").first,
+        page.locator('button:has-text("Partilhar")').first,
+    ]
 
-        if await warning_btn.count() == 0:
-            return False
+    for warning_btn in candidates:
+        try:
+            if await warning_btn.count() == 0:
+                continue
 
-        if not await warning_btn.is_visible():
-            return False
+            if not await warning_btn.is_visible():
+                continue
+
+            try:
+                await warning_btn.scroll_into_view_if_needed()
+            except Exception:
+                pass
+
+            try:
+                await warning_btn.click(timeout=2500)
+            except Exception:
+                try:
+                    box = await warning_btn.bounding_box()
+                    if box:
+                        x = box["x"] + box["width"] / 2
+                        y = box["y"] + box["height"] / 2
+                        await page.mouse.move(x, y)
+                        await page.wait_for_timeout(100)
+                        await page.mouse.click(x, y)
+                    else:
+                        raise RuntimeError("warning button bounding box is empty")
+                except Exception:
+                    try:
+                        await warning_btn.click(force=True, timeout=2500)
+                    except Exception:
+                        continue
+
+            await page.wait_for_timeout(1000)
+            return True
+
+        except Exception:
+            continue
+
+    return False
+
+
+async def _try_unblock_send_button_by_warning(page) -> dict[str, Any]:
+    handled = await _click_share_personal_data_warning_if_present(page)
+    if not handled:
+        return {
+            "warning_handled": False,
+            "submit_unblocked": False,
+        }
+
+    for selector in STRICT_SEND_BUTTON_SELECTORS:
+        locator = page.locator(selector).first
+        if await _is_clickable_send_button(locator):
+            return {
+                "warning_handled": True,
+                "submit_unblocked": True,
+            }
+
+    try:
+        submit_btn = page.locator('button[aria-label="Submit message"]').first
+        return {
+            "warning_handled": True,
+            "submit_unblocked": await _is_clickable_send_button(submit_btn),
+        }
+    except Exception:
+        return {
+            "warning_handled": True,
+            "submit_unblocked": False,
+        }
+
+
+async def click_send_button(
+    page,
+    input_locator,
+    *,
+    market_code: str = DEFAULT_MESSAGE_MARKET,
+) -> dict[str, Any]:
+    result = {
+        "send_clicked": False,
+        "personal_data_warning_handled": False,
+    }
+
+    warning_unblock_attempted = False
+
+    for selector in STRICT_SEND_BUTTON_SELECTORS:
+        locator = page.locator(selector).first
 
         try:
-            await warning_btn.scroll_into_view_if_needed()
+            await locator.wait_for(state="attached", timeout=2000)
+        except Exception:
+            pass
+
+        if not await _is_clickable_send_button(locator):
+            if not warning_unblock_attempted:
+                warning_unblock_attempted = True
+                warning_result = await _try_unblock_send_button_by_warning(page)
+                if warning_result.get("warning_handled"):
+                    result["personal_data_warning_handled"] = True
+
+            if not await _is_clickable_send_button(locator):
+                continue
+
+        try:
+            await locator.scroll_into_view_if_needed()
         except Exception:
             pass
 
         try:
-            await warning_btn.click(timeout=2500)
+            box = await locator.bounding_box()
+            if box:
+                x = box["x"] + box["width"] / 2
+                y = box["y"] + box["height"] / 2
+                await page.mouse.move(x, y)
+                await page.wait_for_timeout(100)
+                await page.mouse.click(x, y)
+                result["send_clicked"] = True
+                return result
         except Exception:
+            pass
+
+        try:
+            await locator.click(timeout=2500)
+            result["send_clicked"] = True
+            return result
+        except Exception:
+            pass
+
+        try:
+            await locator.click(force=True, timeout=2500)
+            result["send_clicked"] = True
+            return result
+        except Exception:
+            continue
+
+    fallback_candidates = []
+    for text in _build_send_button_texts(market_code):
+        fallback_candidates.extend(
+            [
+                page.get_by_role("button", name=text),
+                page.locator(f"button:has-text('{text}')"),
+            ]
+        )
+
+    for locator in fallback_candidates:
+        try:
+            count = await locator.count()
+        except Exception:
+            continue
+
+        for i in range(count):
+            item = locator.nth(i)
+
+            if not await _is_clickable_send_button(item):
+                if not warning_unblock_attempted:
+                    warning_unblock_attempted = True
+                    warning_result = await _try_unblock_send_button_by_warning(page)
+                    if warning_result.get("warning_handled"):
+                        result["personal_data_warning_handled"] = True
+
+                if not await _is_clickable_send_button(item):
+                    continue
+
             try:
-                await warning_btn.click(force=True, timeout=2500)
+                item_type = await item.get_attribute("type")
             except Exception:
-                return False
+                item_type = None
 
-        await page.wait_for_timeout(800)
-        return True
+            try:
+                aria_label = await item.get_attribute("aria-label")
+            except Exception:
+                aria_label = None
 
-    except Exception:
-        return False
+            allow_click = (
+                item_type == "submit"
+                or (aria_label or "").lower() == "submit message"
+            )
+
+            if not allow_click:
+                continue
+
+            try:
+                await item.scroll_into_view_if_needed()
+            except Exception:
+                pass
+
+            try:
+                await item.click(timeout=2500)
+                result["send_clicked"] = True
+                return result
+            except Exception:
+                pass
+
+            try:
+                await item.click(force=True, timeout=2500)
+                result["send_clicked"] = True
+                return result
+            except Exception:
+                continue
+
+    for hotkey in ("Control+Enter", "Meta+Enter", "Enter"):
+        try:
+            await input_locator.focus()
+        except Exception:
+            pass
+
+        try:
+            await input_locator.press(hotkey)
+            await page.wait_for_timeout(300)
+            result["send_clicked"] = True
+            return result
+        except Exception:
+            continue
+
+    return result
 
 
 async def _try_unblock_send_button_by_warning(page) -> bool:
