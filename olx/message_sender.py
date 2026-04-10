@@ -13,6 +13,7 @@ from olx.markets.message_helpers import get_delivery_failed_texts
 from olx.message_sender_chat import collect_chat_diagnostics
 from olx.message_sender_debug import (
     base_result,
+    normalize_text,
     safe_locator_text,
     save_debug_artifacts,
 )
@@ -128,6 +129,20 @@ def _is_same_ad_page(current_url: str | None, ad_url: str | None) -> bool:
     return current_norm == ad_norm
 
 
+async def _read_effective_input_text(input_locator) -> str:
+    try:
+        value = await input_locator.input_value()
+        return value or ""
+    except Exception:
+        pass
+
+    try:
+        value = await input_locator.evaluate("(el) => el.value || el.textContent || ''")
+        return value or ""
+    except Exception:
+        return ""
+
+
 async def send_message_to_ad(
     cookies_json: str,
     proxy_text: str,
@@ -172,6 +187,10 @@ async def send_message_to_ad(
     result["template_image_error"] = None
     result["template_image_filename"] = None
     result["template_image_removed_old_previews"] = 0
+
+    result["sanitized_message_detected"] = False
+    result["original_message_text"] = message_text
+    result["effective_message_text"] = None
 
     if not (ad_url or "").strip():
         result["status"] = "invalid_input"
@@ -398,6 +417,28 @@ async def send_message_to_ad(
         result["timings_ms"]["fill_message_input"] = _elapsed_ms(t_step)
 
         await page.wait_for_timeout(250)
+
+        effective_message_text = await _read_effective_input_text(input_locator)
+        result["effective_message_text"] = effective_message_text
+
+        original_norm = normalize_text(message_text)
+        effective_norm = normalize_text(effective_message_text)
+
+        if effective_norm != original_norm:
+            result["sanitized_message_detected"] = True
+            result["status"] = "message_contains_disallowed_characters"
+            result["error"] = (
+                "OLX изменил текст сообщения и удалил часть символов. "
+                "Скорее всего, в шаблоне есть запрещённые или нестандартные символы. "
+                "Измените текст шаблона и попробуйте снова."
+            )
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(
+                page,
+                result,
+                prefix="message_contains_disallowed_characters",
+            )
+            return result
 
         try:
             submit_btn = page.locator('button[aria-label="Submit message"]').first

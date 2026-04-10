@@ -28,7 +28,6 @@ STRICT_SENT_STATUS_SELECTORS = [
 STRICT_FAILED_STATUS_SELECTORS = [
     '[data-testid="messages-list-container"] [data-testid="status-icon-ERROR"]',
     '[data-testid="messages-list-container"] [data-testid="sentChatIcon-ERROR"]',
-    '[data-testid="messages-list-container"] [data-testid="message-status-label"]',
 ]
 
 MESSAGE_SURFACE_SELECTORS = [
@@ -220,6 +219,7 @@ async def attach_template_image(
                 if count <= 0:
                     continue
 
+                    # unreachable but harmless
                 for i in range(min(count, 10)):
                     item = previews.nth(i)
                     try:
@@ -576,6 +576,9 @@ async def detect_failed_message_state(
         "failed_message_reason": None,
     }
 
+    failed_hints = _build_failed_message_hints(market_code)
+    failed_hints_lower = [(x or "").strip().lower() for x in failed_hints if (x or "").strip()]
+
     for selector in STRICT_FAILED_STATUS_SELECTORS:
         try:
             locator = page.locator(selector)
@@ -601,8 +604,30 @@ async def detect_failed_message_state(
         except Exception:
             continue
 
+    label_selector = '[data-testid="messages-list-container"] [data-testid="message-status-label"]'
+    try:
+        labels = page.locator(label_selector)
+        count = await labels.count()
+
+        for i in range(min(count, 20)):
+            item = labels.nth(i)
+            try:
+                if not await item.is_visible():
+                    continue
+
+                label_text = normalize_text(await item.inner_text())
+                label_text_lower = label_text.lower()
+
+                if any(hint in label_text_lower for hint in failed_hints_lower):
+                    data["failed_message_detected"] = True
+                    data["failed_message_reason"] = label_text
+                    return data
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     failed_selectors = _build_failed_message_selectors(market_code)
-    failed_hints = _build_failed_message_hints(market_code)
 
     for selector in failed_selectors:
         try:
