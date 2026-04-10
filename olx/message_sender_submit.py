@@ -109,6 +109,31 @@ def _build_failed_message_selectors(market_code: str = DEFAULT_MESSAGE_MARKET) -
     return [f"text={item}" for item in _build_failed_message_hints(market_code)]
 
 
+def _build_pending_message_hints(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
+    values = []
+    seen = set()
+
+    defaults = [
+        "A enviar",
+        "A enviar…",
+        "A enviar...",
+        "Enviando",
+        "Sending",
+    ]
+
+    for item in defaults:
+        text = (item or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        values.append(text)
+
+    return values
+
+
 async def _find_first_visible_locator(page, selectors: list[str]):
     for selector in selectors:
         try:
@@ -219,7 +244,6 @@ async def attach_template_image(
                 if count <= 0:
                     continue
 
-                    # unreachable but harmless
                 for i in range(min(count, 10)):
                     item = previews.nth(i)
                     try:
@@ -656,6 +680,45 @@ async def detect_failed_message_state(
     return data
 
 
+async def detect_pending_message_state(
+    page,
+    *,
+    market_code: str = DEFAULT_MESSAGE_MARKET,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "pending_message_detected": False,
+        "pending_message_reason": None,
+    }
+
+    pending_hints = _build_pending_message_hints(market_code)
+    pending_hints_lower = [(x or "").strip().lower() for x in pending_hints if (x or "").strip()]
+
+    label_selector = '[data-testid="messages-list-container"] [data-testid="message-status-label"]'
+    try:
+        labels = page.locator(label_selector)
+        count = await labels.count()
+
+        for i in range(min(count, 20)):
+            item = labels.nth(i)
+            try:
+                if not await item.is_visible():
+                    continue
+
+                label_text = normalize_text(await item.inner_text())
+                label_text_lower = label_text.lower()
+
+                if any(hint in label_text_lower for hint in pending_hints_lower):
+                    data["pending_message_detected"] = True
+                    data["pending_message_reason"] = label_text
+                    return data
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return data
+
+
 async def _has_visible_selector(page, selector: str, limit: int = 20) -> bool:
     try:
         locator = page.locator(selector)
@@ -697,6 +760,8 @@ async def verify_message_sent(
         "post_send_sent_message_found": False,
         "failed_message_detected": False,
         "failed_message_reason": None,
+        "pending_message_detected": False,
+        "pending_message_reason": None,
         "market_code": market_code,
     }
 
@@ -713,7 +778,6 @@ async def verify_message_sent(
         except Exception:
             pass
 
-        input_value = ""
         try:
             input_value = await read_input_value(input_locator)
             verification["post_send_input_empty"] = not bool(input_value)
@@ -744,6 +808,14 @@ async def verify_message_sent(
                 or "OLX показал ошибку доставки сообщения"
             )
             return verification
+
+        try:
+            pending_info = await detect_pending_message_state(page, market_code=market_code)
+            verification["pending_message_detected"] = pending_info["pending_message_detected"]
+            verification["pending_message_reason"] = pending_info["pending_message_reason"]
+        except Exception:
+            verification["pending_message_detected"] = False
+            verification["pending_message_reason"] = None
 
         verification["post_send_sent_status_found"] = False
         for selector in STRICT_SENT_STATUS_SELECTORS:
@@ -814,6 +886,7 @@ async def verify_message_sent(
             verification["post_send_sent_message_found"]
             and verification["post_send_input_empty"]
             and not verification["failed_message_detected"]
+            and not verification["pending_message_detected"]
         ):
             verification["delivery_verified"] = True
             return verification
@@ -822,8 +895,12 @@ async def verify_message_sent(
             verification["post_send_message_visible"]
             and verification["post_send_input_empty"]
             and not verification["failed_message_detected"]
+            and not verification["pending_message_detected"]
         ):
             verification["delivery_verified"] = True
             return verification
+
+        if verification["pending_message_detected"]:
+            continue
 
     return verification
