@@ -20,10 +20,22 @@ STRICT_SEND_BUTTON_SELECTORS = [
     '[data-testid="chat-form-container"] button[type="submit"]',
 ]
 
+STRICT_SENT_STATUS_SELECTORS = [
+    '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
+    '[data-testid="messages-list-container"] [data-testid="sentChatIcon-SENT"]',
+]
+
+STRICT_FAILED_STATUS_SELECTORS = [
+    '[data-testid="messages-list-container"] [data-testid="status-icon-ERROR"]',
+    '[data-testid="messages-list-container"] [data-testid="sentChatIcon-ERROR"]',
+    '[data-testid="messages-list-container"] [data-testid="message-status-label"]',
+]
+
 MESSAGE_SURFACE_SELECTORS = [
     '[data-testid="messages-list-container"] [data-testid="sent-message"]',
+    '[data-testid="messages-list-container"] [data-cy="sent-message"]',
     '[data-testid="messages-list-container"] [data-cy="chat-message-bubble"]',
-    '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]',
+    '[data-testid="messages-list-container"] [data-testid="message"]',
 ]
 
 ATTACHMENT_INPUT_SELECTORS = [
@@ -74,6 +86,7 @@ def _build_failed_message_hints(market_code: str = DEFAULT_MESSAGE_MARKET) -> li
     defaults = [
         "Não podes enviar esta mensagem",
         "Clica para tentar de novo",
+        "Toca para tentar de novo",
         "Tenta de novo",
         "Não foi possível enviar",
         "Mensagem não enviada",
@@ -563,6 +576,31 @@ async def detect_failed_message_state(
         "failed_message_reason": None,
     }
 
+    for selector in STRICT_FAILED_STATUS_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+
+            for i in range(min(count, 20)):
+                item = locator.nth(i)
+                try:
+                    if not await item.is_visible():
+                        continue
+
+                    reason_text = ""
+                    try:
+                        reason_text = normalize_text(await item.inner_text())
+                    except Exception:
+                        reason_text = ""
+
+                    data["failed_message_detected"] = True
+                    data["failed_message_reason"] = reason_text or selector
+                    return data
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
     failed_selectors = _build_failed_message_selectors(market_code)
     failed_hints = _build_failed_message_hints(market_code)
 
@@ -591,6 +629,24 @@ async def detect_failed_message_state(
         pass
 
     return data
+
+
+async def _has_visible_selector(page, selector: str, limit: int = 20) -> bool:
+    try:
+        locator = page.locator(selector)
+        count = await locator.count()
+
+        for i in range(min(count, limit)):
+            item = locator.nth(i)
+            try:
+                if await item.is_visible():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        return False
+
+    return False
 
 
 async def verify_message_sent(
@@ -658,28 +714,26 @@ async def verify_message_sent(
         if verification["failed_message_detected"]:
             verification["delivery_verified"] = False
             verification["delivery_failed"] = True
-            verification["delivery_failed_reason"] = verification["failed_message_reason"]
+            verification["delivery_failed_reason"] = (
+                verification["failed_message_reason"]
+                or "OLX показал ошибку доставки сообщения"
+            )
             return verification
 
-        try:
-            sent_status = page.locator(
-                '[data-testid="messages-list-container"] [data-testid="status-icon-SENT"]'
-            ).first
-            verification["post_send_sent_status_found"] = (
-                await sent_status.count() > 0 and await sent_status.is_visible()
-            )
-        except Exception:
-            verification["post_send_sent_status_found"] = False
+        verification["post_send_sent_status_found"] = False
+        for selector in STRICT_SENT_STATUS_SELECTORS:
+            if await _has_visible_selector(page, selector):
+                verification["post_send_sent_status_found"] = True
+                break
 
-        try:
-            sent_message = page.locator(
-                '[data-testid="messages-list-container"] [data-testid="sent-message"]'
-            ).first
-            verification["post_send_sent_message_found"] = (
-                await sent_message.count() > 0 and await sent_message.is_visible()
-            )
-        except Exception:
-            verification["post_send_sent_message_found"] = False
+        verification["post_send_sent_message_found"] = False
+        for selector in [
+            '[data-testid="messages-list-container"] [data-testid="sent-message"]',
+            '[data-testid="messages-list-container"] [data-cy="sent-message"]',
+        ]:
+            if await _has_visible_selector(page, selector):
+                verification["post_send_sent_message_found"] = True
+                break
 
         exact_match_count = 0
         try:
@@ -727,10 +781,7 @@ async def verify_message_sent(
 
         verification["post_send_exact_message_match_count"] = exact_match_count
 
-        if (
-            verification["post_send_sent_status_found"]
-            and verification["post_send_input_empty"]
-        ):
+        if verification["post_send_sent_status_found"]:
             verification["delivery_verified"] = True
             return verification
 

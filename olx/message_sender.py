@@ -94,6 +94,40 @@ def _detect_market_mismatch(
     )
 
 
+def _normalize_olx_url_for_compare(url: str | None) -> str:
+    text = (url or "").strip()
+    if not text:
+        return ""
+
+    if "?" in text:
+        base, query = text.split("?", 1)
+        allowed_parts = []
+
+        for part in query.split("&"):
+            part = part.strip()
+            if not part:
+                continue
+            if part.startswith("chat="):
+                continue
+            if part.startswith("isPreviewActive="):
+                continue
+            allowed_parts.append(part)
+
+        text = base if not allowed_parts else f"{base}?{'&'.join(allowed_parts)}"
+
+    return text.rstrip("/")
+
+
+def _is_same_ad_page(current_url: str | None, ad_url: str | None) -> bool:
+    current_norm = _normalize_olx_url_for_compare(current_url)
+    ad_norm = _normalize_olx_url_for_compare(ad_url)
+
+    if not current_norm or not ad_norm:
+        return False
+
+    return current_norm == ad_norm
+
+
 async def send_message_to_ad(
     cookies_json: str,
     proxy_text: str,
@@ -266,6 +300,19 @@ async def send_message_to_ad(
             if key in chat_open:
                 result[key] = chat_open.get(key)
 
+        result["final_url"] = page.url
+
+        if not _is_same_ad_page(page.url, ad_url):
+            result["timings_ms"]["find_or_open_chat"] = _elapsed_ms(t_step)
+            result["status"] = "message_input_not_found"
+            result["error"] = (
+                "После retry/reload страница ушла со страницы объявления. "
+                "Send-flow остановлен до ввода сообщения."
+            )
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_input_wrong_page")
+            return result
+
         result["daily_limit_reached"] = await _has_daily_limit_banner(page, market_code=market_code)
 
         if chat_open.get("cloudfront_blocked"):
@@ -311,6 +358,17 @@ async def send_message_to_ad(
         t_step = time.perf_counter()
         result.update(await collect_chat_diagnostics(page))
         result["timings_ms"]["collect_chat_diagnostics_before_fill"] = _elapsed_ms(t_step)
+
+        result["final_url"] = page.url
+
+        if not _is_same_ad_page(page.url, ad_url):
+            result["status"] = "message_input_not_found"
+            result["error"] = (
+                "Перед вводом сообщения страница уже не совпадала со страницей объявления."
+            )
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="message_input_wrong_page")
+            return result
 
         template_image_path = None
         if user_id:
