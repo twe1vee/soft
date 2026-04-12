@@ -285,6 +285,44 @@ class SendJobsManager:
 
             market_code = (account.get("market") or DEFAULT_SEND_MARKET).strip().lower() or DEFAULT_SEND_MARKET
 
+            account_status_now = (account.get("status") or "").strip().lower()
+
+            if account_status_now == "write_blocked":
+                update_ad_status(job.user_id, job.ad_row_id, "send_blocked_write_blocked")
+                update_pending_action_status(job.pending_action_id, "failed")
+                result = build_failure_result(
+                    status="message_delivery_failed",
+                    error="Этот аккаунт уже помечен как не умеющий отправлять новые сообщения",
+                    ad=ad,
+                    account=account,
+                    proxy=None,
+                )
+                result["market_code"] = market_code
+                result["account_status"] = "write_blocked"
+                job.result = result
+                job.status = "failed"
+                job.finished_at = time.time()
+                await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=None)
+                return
+
+            if account_status_now == "write_limited":
+                update_ad_status(job.user_id, job.ad_row_id, "send_blocked_write_limited")
+                update_pending_action_status(job.pending_action_id, "failed")
+                result = build_failure_result(
+                    status="daily_limit_reached",
+                    error="Этот аккаунт уже помечен как достигший лимита новых диалогов",
+                    ad=ad,
+                    account=account,
+                    proxy=None,
+                )
+                result["market_code"] = market_code
+                result["account_status"] = "write_limited"
+                job.result = result
+                job.status = "failed"
+                job.finished_at = time.time()
+                await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=None)
+                return
+
             cookies_json = account.get("cookies_json")
             if not cookies_json:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_missing_cookies")

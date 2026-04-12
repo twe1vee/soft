@@ -128,13 +128,43 @@ async def get_account_runtime(
         try:
             browser, context, runtime = await manager.__aenter__()
         except Exception as exc:
-            mark_runtime_open_failed(account_id)
-            _runtime_debug(
-                f"runtime_open_failed account_id={account_id} error={exc}"
-            )
-            raise
+            error_text = str(exc or "").lower()
+
+            if "database is locked" in error_text:
+                _runtime_debug(
+                    f"runtime_open_retry account_id={account_id} reason=database_locked"
+                )
+                with contextlib.suppress(Exception):
+                    await manager.__aexit__(None, None, None)
+
+                await asyncio.sleep(2.0)
+
+                manager = open_olx_browser_context(
+                    cookies_json=cookies_json,
+                    proxy_text=proxy_text,
+                    headless=headless,
+                    user_id=user_id,
+                    account_id=account_id,
+                    olx_profile_name=olx_profile_name,
+                )
+                try:
+                    browser, context, runtime = await manager.__aenter__()
+                except Exception as retry_exc:
+                    mark_runtime_open_failed(account_id)
+                    _runtime_debug(
+                        f"runtime_open_failed account_id={account_id} error={retry_exc}"
+                    )
+                    raise
+            else:
+                mark_runtime_open_failed(account_id)
+                _runtime_debug(
+                    f"runtime_open_failed account_id={account_id} error={exc}"
+                )
+                raise
         else:
             clear_runtime_open_failure(account_id)
+
+        clear_runtime_open_failure(account_id)
 
         entry.manager = manager
         entry.browser = browser

@@ -8,14 +8,14 @@ def get_dialog_pack(market_code: str = "olx_pt") -> dict:
         "olx_pt": {
             "dialogs_url_suffix": "?my_ads=0",
             "ready_selectors": [
+                '[data-testid^="conversations-list-item-"]',
+                '[data-testid*="conversations-list-item"]',
                 '[data-cy="chat-list"]',
                 '[data-testid="chat-list"]',
                 '[data-cy="chat-item"]',
                 '[data-testid="chat-item"]',
                 'a[href*="/d/oferta/"]',
                 'a[href*="/d/anuncio/"]',
-                'a[href*="/myaccount/answers/"]',
-                "main",
             ],
             "empty_state_selectors": [
                 '[data-cy="empty-state"]',

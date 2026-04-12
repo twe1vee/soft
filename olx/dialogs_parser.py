@@ -9,7 +9,6 @@ LIST_ROW_SELECTORS = [
     '[data-testid^="conversations-list-item-"]',
     '[data-testid*="conversations-list-item"]',
     'a[href*="/myaccount/answer/"]',
-    'a[href*="/myaccount/answers/"]',
 ]
 
 NAME_SELECTOR = '[data-testid="list-item-user-name"]'
@@ -206,6 +205,16 @@ async def _parse_single_row(
     *,
     market_code: str = DEFAULT_DIALOGS_MARKET,
 ) -> dict[str, Any] | None:
+    try:
+        has_name = await _safe_count(row.locator(NAME_SELECTOR).first) > 0
+        has_title = await _safe_count(row.locator(TITLE_SELECTOR).first) > 0
+        has_message = await _safe_count(row.locator(MESSAGE_SELECTOR).first) > 0
+        if not (has_name or has_title or has_message):
+            print("[dialogs_parser] row_skip no inner list markers")
+            return None
+    except Exception:
+        pass
+
     conversation_id = await _extract_conversation_id(row)
     if not conversation_id:
         print("[dialogs_parser] row_skip no conversation_id")

@@ -35,6 +35,18 @@ def _is_profile_not_found_error(exc: Exception) -> bool:
     )
 
 
+def _is_transient_start_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    markers = [
+        "database is locked",
+        "file is being used by another process",
+        "the process cannot access the file",
+        "cookies",
+        "winerror 32",
+    ]
+    return any(marker in text for marker in markers)
+
+
 async def _prepare_runtime(
     *,
     cookies_json: str,
@@ -88,68 +100,85 @@ async def open_gologin_browser_context(
 
     try:
         try:
-            debugger_address = await asyncio.to_thread(gl.start)
-        except Exception as exc:
-            if not _is_profile_not_found_error(exc):
-                raise
+            try:
+                debugger_address = await asyncio.to_thread(gl.start)
+            except Exception as exc:
+                if _is_profile_not_found_error(exc):
+                    if user_id is None or account_id is None:
+                        raise
 
-            if user_id is None or account_id is None:
-                raise
+                    print(
+                        f"[gologin] stale profile on start for account_id={account_id}, "
+                        f"clearing profile id and recreating"
+                    )
 
-            print(
-                f"[gologin] stale profile on start for account_id={account_id}, "
-                f"clearing profile id and recreating"
+                    await asyncio.to_thread(clear_account_gologin_profile, user_id, account_id)
+
+                    runtime, gl = await _prepare_runtime(
+                        cookies_json=cookies_json,
+                        proxy_text=proxy_text,
+                        headless=headless,
+                        user_id=user_id,
+                        account_id=account_id,
+                        olx_profile_name=olx_profile_name,
+                    )
+
+                    debugger_address = await asyncio.to_thread(gl.start)
+
+                elif _is_transient_start_error(exc):
+                    print(
+                        f"[gologin] transient start error for account_id={account_id}: {exc}. "
+                        f"retrying start once"
+                    )
+                    try:
+                        await wait_gologin_stop_slot()
+                        await asyncio.to_thread(gl.stop)
+                    except Exception:
+                        pass
+
+                    await asyncio.sleep(2.0)
+                    debugger_address = await asyncio.to_thread(gl.start)
+                else:
+                    raise
+
+            runtime["debugger_address"] = debugger_address
+
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.connect_over_cdp(
+                _to_cdp_endpoint(debugger_address)
             )
 
-            await asyncio.to_thread(clear_account_gologin_profile, user_id, account_id)
+            if browser.contexts:
+                context = browser.contexts[0]
+            else:
+                context = await browser.new_context()
+                created_context = True
 
-            runtime, gl = await _prepare_runtime(
-                cookies_json=cookies_json,
-                proxy_text=proxy_text,
-                headless=headless,
-                user_id=user_id,
-                account_id=account_id,
-                olx_profile_name=olx_profile_name,
-            )
+            yield browser, context, runtime
 
-            debugger_address = await asyncio.to_thread(gl.start)
+        finally:
+            try:
+                if created_context and context:
+                    await context.close()
+            except Exception:
+                pass
 
-        runtime["debugger_address"] = debugger_address
+            try:
+                if browser:
+                    await browser.close()
+            except Exception:
+                pass
 
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.connect_over_cdp(
-            _to_cdp_endpoint(debugger_address)
-        )
+            try:
+                if playwright:
+                    await playwright.stop()
+            except Exception:
+                pass
 
-        if browser.contexts:
-            context = browser.contexts[0]
-        else:
-            context = await browser.new_context()
-            created_context = True
-
-        yield browser, context, runtime
-
+            try:
+                await wait_gologin_stop_slot()
+                await asyncio.to_thread(gl.stop)
+            except Exception:
+                pass
     finally:
-        try:
-            if created_context and context:
-                await context.close()
-        except Exception:
-            pass
-
-        try:
-            if browser:
-                await browser.close()
-        except Exception:
-            pass
-
-        try:
-            if playwright:
-                await playwright.stop()
-        except Exception:
-            pass
-
-        try:
-            await wait_gologin_stop_slot()
-            await asyncio.to_thread(gl.stop)
-        except Exception:
-            pass
+        pass

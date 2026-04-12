@@ -46,7 +46,7 @@ def map_send_status_to_account_status(
         return "write_blocked"
 
     if send_status in TRANSIENT_SEND_STATUSES:
-        return "dead" if retry_used else "loading_retry"
+        return "loading_retry" if not retry_used else None
 
     if send_status in DEAD_SEND_STATUSES:
         return "dead"
