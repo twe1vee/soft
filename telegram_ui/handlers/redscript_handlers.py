@@ -5,8 +5,6 @@ from telegram.ext import ContextTypes
 
 from db import (
     get_user_by_id,
-    get_user_accounts,
-    get_proxy_by_id,
     update_user_redscript_defaults,
     update_user_redscript_token,
 )
@@ -76,34 +74,6 @@ def _get_user_settings(user: dict) -> dict:
         "service": (user.get("redscript_service") or DEFAULT_SERVICE).strip(),
         "version": (user.get("redscript_version") or DEFAULT_VERSION).strip(),
     }
-
-
-def _pick_account_for_parse(user_id: int) -> tuple[dict | None, dict | None]:
-    accounts = get_user_accounts(user_id)
-    if not accounts:
-        return None, None
-
-    preferred_statuses = {"working", "connected", "checked", "new", "loading_retry"}
-    sorted_accounts = sorted(
-        accounts,
-        key=lambda a: (
-            0 if (a.get("status") or "").strip().lower() in preferred_statuses else 1,
-            a.get("id") or 999999,
-        ),
-    )
-
-    for account in sorted_accounts:
-        proxy_id = account.get("proxy_id")
-        if not proxy_id:
-            continue
-        proxy = get_proxy_by_id(user_id, proxy_id)
-        if not proxy or not proxy.get("proxy_text"):
-            continue
-        if not account.get("cookies_json"):
-            continue
-        return account, proxy
-
-    return None, None
 
 
 async def show_redscript_screen(update_or_query, user_id: int):
@@ -304,22 +274,9 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
         _clear_redscript_flow(context)
 
         ad_url = text.strip()
-        account, proxy = _pick_account_for_parse(user_id)
-        if not account or not proxy:
-            await update.message.reply_text(
-                "Не найден подходящий аккаунт с cookies и proxy для парсинга объявления.",
-                reply_markup=build_back_to_menu_keyboard(),
-            )
-            return
-
         parse_result = await parse_ad_page(
-            cookies_json=account.get("cookies_json") or "",
-            proxy_text=proxy.get("proxy_text") or "",
             ad_url=ad_url,
             headless=True,
-            user_id=user_id,
-            account_id=account.get("id"),
-            olx_profile_name=account.get("olx_profile_name"),
             market_code="olx_pt",
         )
 

@@ -4,11 +4,9 @@ import re
 from typing import Any
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
-from olx.account_runtime import close_runtime_page, open_account_runtime_page
-from olx.browser_session import dismiss_cookie_banner_if_present
-from olx.markets.helpers import extract_url_domain, is_market_domain
-from olx.message_sender_page import handle_olx_soft_error_page, is_cloudfront_block_page
+from olx.message_sender_page import is_cloudfront_block_page
 
 DEFAULT_AD_PARSE_MARKET = "olx_pt"
 
@@ -34,6 +32,13 @@ PT_IMAGE_SELECTORS = [
     'img[data-testid="swiper-image"]',
     'img[data-testid="swiper-image-lazy"]',
     '[data-testid="image-galery-container"] img',
+]
+
+COOKIE_BANNER_SELECTORS = [
+    'button#onetrust-accept-btn-handler',
+    'button:has-text("Aceitar")',
+    'button:has-text("Aceitar tudo")',
+    'button:has-text("Accept")',
 ]
 
 
@@ -62,10 +67,28 @@ async def _safe_attr(page, selector: str, attr_name: str) -> str | None:
         return None
 
 
+async def _dismiss_cookie_banner_if_present(page) -> None:
+    for selector in COOKIE_BANNER_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if not await locator.is_visible():
+                continue
+            try:
+                await locator.click(timeout=2000)
+            except Exception:
+                await locator.click(force=True, timeout=2000)
+            await page.wait_for_timeout(500)
+            return
+        except Exception:
+            continue
+
+
 async def _wait_for_ready(page, market_code: str = DEFAULT_AD_PARSE_MARKET) -> bool:
     selectors = PT_READY_SELECTORS if market_code == "olx_pt" else PT_READY_SELECTORS
 
-    for _ in range(12):
+    for _ in range(16):
         for selector in selectors:
             try:
                 locator = page.locator(selector).first
@@ -83,35 +106,15 @@ def _normalize_amount_text(raw_price: str) -> str:
     if not text:
         return ""
 
-    # Для RedScript можно оставить человекочитаемый формат, например "15 EUR"
     text = text.replace("€", " EUR")
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-def _detect_market_mismatch(ad_url: str, market_code: str) -> str | None:
-    domain = extract_url_domain(ad_url)
-    if not domain:
-        return None
-
-    if is_market_domain(domain, market_code):
-        return None
-
-    return (
-        f"Ссылка объявления относится к другому рынку: {domain}. "
-        f"Парсер запущен для рынка {market_code}."
-    )
-
-
 async def parse_ad_page(
     *,
-    cookies_json: str,
-    proxy_text: str,
     ad_url: str,
     headless: bool = True,
-    user_id: int | None = None,
-    account_id: int | None = None,
-    olx_profile_name: str | None = None,
     market_code: str = DEFAULT_AD_PARSE_MARKET,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
@@ -124,10 +127,7 @@ async def parse_ad_page(
         "amount": None,
         "image": None,
         "market_code": market_code,
-        "browser_engine": "gologin",
-        "gologin_profile_id": None,
-        "gologin_profile_name": None,
-        "debugger_address": None,
+        "browser_engine": "playwright_public",
     }
 
     if not (ad_url or "").strip():
@@ -135,38 +135,19 @@ async def parse_ad_page(
         result["error"] = "Пустой ad_url"
         return result
 
-    market_mismatch_error = _detect_market_mismatch(ad_url, market_code)
-    if market_mismatch_error:
-        result["status"] = "market_mismatch"
-        result["error"] = market_mismatch_error
-        return result
-
+    playwright = None
+    browser = None
+    context = None
     page = None
-    runtime_entry = None
 
     try:
-        if not account_id or int(account_id) <= 0:
-            result["status"] = "invalid_input"
-            result["error"] = f"Некорректный account_id для parse_ad_page: {account_id}"
-            return result
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=headless)
+        context = await browser.new_context()
+        page = await context.new_page()
 
-        page, runtime_entry = await open_account_runtime_page(
-            user_id=user_id,
-            account_id=int(account_id),
-            cookies_json=cookies_json,
-            proxy_text=proxy_text,
-            url=ad_url,
-            headless=headless,
-            olx_profile_name=olx_profile_name,
-            timeout=90000,
-            wait_after_ms=1500,
-            busy_reason="parse_ad_page",
-        )
-
-        result["browser_engine"] = runtime_entry.runtime.get("browser_engine", "gologin")
-        result["gologin_profile_id"] = runtime_entry.runtime.get("gologin_profile_id")
-        result["gologin_profile_name"] = runtime_entry.runtime.get("gologin_profile_name")
-        result["debugger_address"] = runtime_entry.runtime.get("debugger_address")
+        await page.goto(ad_url, wait_until="domcontentloaded", timeout=90000)
+        await page.wait_for_timeout(1500)
 
         result["final_url"] = page.url
         try:
@@ -179,23 +160,7 @@ async def parse_ad_page(
             result["error"] = "OLX/CloudFront заблокировал страницу объявления"
             return result
 
-        try:
-            await dismiss_cookie_banner_if_present(page)
-        except Exception:
-            pass
-
-        handled_soft_error = await handle_olx_soft_error_page(page, market_code=market_code)
-        if handled_soft_error:
-            result["final_url"] = page.url
-            try:
-                result["page_title"] = await page.title()
-            except Exception:
-                pass
-
-        if await is_cloudfront_block_page(page):
-            result["status"] = "cloudfront_blocked"
-            result["error"] = "OLX/CloudFront заблокировал страницу объявления"
-            return result
+        await _dismiss_cookie_banner_if_present(page)
 
         ready = await _wait_for_ready(page, market_code=market_code)
         if not ready:
@@ -247,5 +212,26 @@ async def parse_ad_page(
         result["error"] = str(exc)
         return result
     finally:
-        if runtime_entry is not None:
-            await close_runtime_page(runtime_entry, page)
+        try:
+            if page is not None and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception:
+            pass
+
+        try:
+            if playwright is not None:
+                await playwright.stop()
+        except Exception:
+            pass
