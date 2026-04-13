@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -26,6 +28,17 @@ def _mask_token(token: str | None) -> str:
     if len(text) <= 8:
         return "••••••••"
     return f"{'•' * 8}{text[-4:]}"
+
+
+def _sanitize_redscript_name(value: str | None) -> str:
+    text = str(value or "")
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if len(text) > 250:
+        text = text[:250].strip()
+
+    return text
 
 
 def _clear_redscript_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -348,6 +361,17 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         )
         return
 
+    safe_name = _sanitize_redscript_name(payload.get("name"))
+    if not safe_name:
+        _clear_redscript_flow(context)
+        context.user_data.pop("redscript_send_payload", None)
+
+        await update.message.reply_text(
+            "Не удалось подготовить название объявления для отправки.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
+
     try:
         result = send_mail(
             token,
@@ -357,7 +381,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
             type_value=settings["type"] or DEFAULT_TYPE,
             service=settings["service"] or DEFAULT_SERVICE,
             version=settings["version"] or DEFAULT_VERSION,
-            name=payload.get("name") or "",
+            name=safe_name,
             amount=payload.get("amount") or "",
             image=(payload.get("image") or "").strip() or None,
             initials=settings["initials"] or None,
