@@ -1,35 +1,10 @@
-from db.database import get_connection
 import time
+
+from db.database import get_connection
 
 
 def _row_to_dict(row):
     return dict(row) if row else None
-
-
-def ensure_accounts_last_used_column():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(accounts)")
-    columns = {str(row["name"]) for row in cursor.fetchall()}
-    if "last_used_at" not in columns:
-        cursor.execute(
-            "ALTER TABLE accounts ADD COLUMN last_used_at INTEGER DEFAULT NULL"
-        )
-        conn.commit()
-    conn.close()
-
-
-def ensure_accounts_market_column():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(accounts)")
-    columns = {str(row["name"]) for row in cursor.fetchall()}
-    if "market" not in columns:
-        cursor.execute(
-            "ALTER TABLE accounts ADD COLUMN market TEXT NOT NULL DEFAULT 'olx_pt'"
-        )
-        conn.commit()
-    conn.close()
 
 
 def _normalize_market(market: str | None) -> str:
@@ -38,8 +13,6 @@ def _normalize_market(market: str | None) -> str:
 
 
 def touch_account_last_used(account_id: int, ts: int | None = None) -> bool:
-    ensure_accounts_last_used_column()
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -77,8 +50,6 @@ def clear_account_gologin_binding_by_account_id(account_id: int) -> bool:
 
 
 def get_stale_accounts_with_profiles(idle_seconds: int) -> list[dict]:
-    ensure_accounts_last_used_column()
-    ensure_accounts_market_column()
     threshold = int(time.time()) - int(idle_seconds)
 
     conn = get_connection()
@@ -101,7 +72,6 @@ def get_stale_accounts_with_profiles(idle_seconds: int) -> list[dict]:
 
 
 def get_stale_user_inactive_accounts_with_profiles(idle_seconds: int) -> list[dict]:
-    ensure_accounts_market_column()
     threshold = int(time.time()) - int(idle_seconds)
 
     conn = get_connection()
@@ -139,9 +109,6 @@ def create_account(
     browser_engine: str = "gologin",
     market: str = "olx_pt",
 ) -> int:
-    ensure_accounts_last_used_column()
-    ensure_accounts_market_column()
-
     now_ts = int(time.time())
     normalized_market = _normalize_market(market)
 
@@ -177,8 +144,6 @@ def create_account(
 
 
 def get_account_by_id(user_id: int, account_id: int) -> dict | None:
-    ensure_accounts_market_column()
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -195,8 +160,6 @@ def get_account_by_id(user_id: int, account_id: int) -> dict | None:
 
 
 def get_user_accounts(user_id: int) -> list[dict]:
-    ensure_accounts_market_column()
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -213,8 +176,6 @@ def get_user_accounts(user_id: int) -> list[dict]:
 
 
 def update_account_status(user_id: int, account_id: int, new_status: str):
-    ensure_accounts_write_blocked_column()
-
     normalized_status = (new_status or "").strip().lower()
     now_ts = int(time.time())
 
@@ -301,8 +262,6 @@ def update_account_proxy(user_id: int, account_id: int, proxy_id: int | None):
 
 
 def update_account_market(user_id: int, account_id: int, market: str):
-    ensure_accounts_market_column()
-
     normalized_market = _normalize_market(market)
 
     conn = get_connection()
@@ -411,6 +370,36 @@ def clear_account_gologin_profile(
 def delete_account(user_id: int, account_id: int):
     conn = get_connection()
     cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM conversations
+        WHERE user_id = ? AND account_id = ?
+        """,
+        (user_id, account_id),
+    )
+    conversation_rows = cursor.fetchall()
+    conversation_ids = [int(row["id"]) for row in conversation_rows]
+
+    if conversation_ids:
+        placeholders = ",".join("?" for _ in conversation_ids)
+        cursor.execute(
+            f"""
+            DELETE FROM conversation_messages
+            WHERE conversation_id IN ({placeholders})
+            """,
+            tuple(conversation_ids),
+        )
+
+    cursor.execute(
+        """
+        DELETE FROM conversations
+        WHERE user_id = ? AND account_id = ?
+        """,
+        (user_id, account_id),
+    )
+
     cursor.execute(
         """
         DELETE FROM accounts
@@ -418,6 +407,7 @@ def delete_account(user_id: int, account_id: int):
         """,
         (account_id, user_id),
     )
+
     conn.commit()
     conn.close()
 
@@ -436,8 +426,6 @@ def ensure_accounts_write_blocked_column():
 
 
 def mark_account_write_blocked(user_id: int, account_id: int, ts: int | None = None):
-    ensure_accounts_write_blocked_column()
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -455,8 +443,6 @@ def mark_account_write_blocked(user_id: int, account_id: int, ts: int | None = N
 
 
 def clear_account_write_blocked(user_id: int, account_id: int):
-    ensure_accounts_write_blocked_column()
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -473,10 +459,6 @@ def clear_account_write_blocked(user_id: int, account_id: int):
 
 
 def get_expired_write_blocked_accounts_with_profiles(grace_seconds: int) -> list[dict]:
-    ensure_accounts_last_used_column()
-    ensure_accounts_write_blocked_column()
-    ensure_accounts_market_column()
-
     threshold = int(time.time()) - int(grace_seconds)
 
     conn = get_connection()

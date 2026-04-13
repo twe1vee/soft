@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
 )
 
+from db import init_db
 from jobs.send_jobs import ensure_send_jobs_started, get_send_jobs_manager
 from olx.dialogs_jobs import start_dialogs_jobs
 from telegram_ui.handlers import (
@@ -77,6 +78,8 @@ async def post_shutdown(application: Application):
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
+
+    init_db()
 
     app = (
         Application.builder()

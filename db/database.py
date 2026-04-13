@@ -4,11 +4,12 @@ DB_FILE = "olx_assistant.db"
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_FILE, timeout=15.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -141,6 +142,8 @@ def init_db():
             last_check_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used_at INTEGER DEFAULT NULL,
+            write_blocked_at INTEGER DEFAULT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (proxy_id) REFERENCES proxies(id)
         )
@@ -234,6 +237,10 @@ def init_db():
         cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_name TEXT")
     if not _column_exists(cursor, "accounts", "market"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN market TEXT NOT NULL DEFAULT 'olx_pt'")
+    if not _column_exists(cursor, "accounts", "last_used_at"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN last_used_at INTEGER DEFAULT NULL")
+    if not _column_exists(cursor, "accounts", "write_blocked_at"):
+        cursor.execute("ALTER TABLE accounts ADD COLUMN write_blocked_at INTEGER DEFAULT NULL")
 
     if not _column_exists(cursor, "proxies", "created_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
@@ -266,6 +273,8 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_gologin_profile_id ON accounts(gologin_profile_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_browser_engine ON accounts(browser_engine)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_market ON accounts(market)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_last_used_at ON accounts(last_used_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_write_blocked_at ON accounts(write_blocked_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_id ON proxies(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_status ON proxies(user_id, status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
