@@ -53,9 +53,37 @@ async def safe_edit_message_text(query, text: str, reply_markup=None, **kwargs):
             reply_markup=reply_markup,
             **kwargs,
         )
+        return True
     except BadRequest as e:
         if "Message is not modified" in str(e):
-            return
+            return True
+        raise
+
+
+async def safe_edit_or_reply(query, text: str, reply_markup=None, **kwargs):
+    try:
+        return await safe_edit_message_text(
+            query,
+            text,
+            reply_markup=reply_markup,
+            **kwargs,
+        )
+    except BadRequest as e:
+        error_text = str(e)
+        stale_markers = [
+            "Query is too old",
+            "query is too old",
+            "response timeout expired",
+            "query id is invalid",
+            "message to edit not found",
+        ]
+        if any(marker in error_text for marker in stale_markers):
+            await query.message.reply_text(
+                text=text,
+                reply_markup=reply_markup,
+                **kwargs,
+            )
+            return False
         raise
 
 
@@ -157,7 +185,7 @@ async def show_accounts_screen(update: Update, context: ContextTypes.DEFAULT_TYP
             "Нажми «Добавить аккаунт», чтобы загрузить cookies."
         )
 
-    await safe_edit_message_text(
+    await safe_edit_or_reply(
         query,
         text=text,
         reply_markup=build_accounts_keyboard(accounts),
@@ -168,7 +196,7 @@ async def show_account_card(query, user_id: int, account_id: int):
     account = get_account_by_id(user_id, account_id)
 
     if not account:
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "Аккаунт не найден.",
             reply_markup=_build_not_found_markup(),
@@ -189,7 +217,7 @@ async def show_account_card(query, user_id: int, account_id: int):
         else:
             proxy_text = "не найден"
 
-    await safe_edit_message_text(
+    await safe_edit_or_reply(
         query,
         "📄 Карточка аккаунта\n\n"
         f"Аккаунт: {profile_name}\n"
@@ -205,12 +233,12 @@ async def _handle_bind_proxy(query, user_id: int, account_id: int):
     account = get_account_by_id(user_id, account_id)
 
     if not account:
-        await safe_edit_message_text(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
+        await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
         return
 
     proxies = get_user_proxies(user_id)
     if not proxies:
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "❌ У тебя пока нет прокси для привязки.",
             reply_markup=InlineKeyboardMarkup([
@@ -220,7 +248,7 @@ async def _handle_bind_proxy(query, user_id: int, account_id: int):
         )
         return
 
-    await safe_edit_message_text(
+    await safe_edit_or_reply(
         query,
         f"🔗 Выбери прокси для аккаунта «{account_display_name(account)}»:",
         reply_markup=build_account_proxy_select_keyboard(account_id, proxies),
@@ -230,12 +258,12 @@ async def _handle_bind_proxy(query, user_id: int, account_id: int):
 async def _handle_set_proxy(query, user_id: int, account_id: int, proxy_id: int):
     account = get_account_by_id(user_id, account_id)
     if not account:
-        await safe_edit_message_text(query, "Аккаунт не найден.")
+        await safe_edit_or_reply(query, "Аккаунт не найден.")
         return
 
     proxy = get_proxy_by_id(user_id, proxy_id)
     if not proxy:
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "Прокси не найден.",
             reply_markup=InlineKeyboardMarkup([
@@ -252,7 +280,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
     account = get_account_by_id(user_id, account_id)
 
     if not account:
-        await safe_edit_message_text(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
+        await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
         return
 
     market_code = _normalize_market(account.get("market"))
@@ -262,7 +290,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         update_account_status(user_id, account_id, "missing_proxy")
         update_account_last_check(user_id, account_id)
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "❌ У аккаунта не привязан прокси.\n\n"
             "Сначала привяжи 1 прокси к этому аккаунту.",
@@ -278,7 +306,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         update_account_status(user_id, account_id, "proxy_not_found")
         update_account_last_check(user_id, account_id)
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "❌ Привязанный прокси не найден.\n\n"
             "Привяжи другой прокси.",
@@ -296,7 +324,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         update_account_status(user_id, account_id, "missing_cookies")
         update_account_last_check(user_id, account_id)
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "❌ У аккаунта отсутствуют cookies_json.",
             reply_markup=InlineKeyboardMarkup([
@@ -306,7 +334,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
         )
         return
 
-    await safe_edit_message_text(
+    await safe_edit_or_reply(
         query,
         "⏳ Проверяю аккаунт через браузер и привязанный proxy...\n\n"
         f"Аккаунт: {account_display_name(account)}\n"
@@ -338,7 +366,7 @@ async def _handle_check_account(query, user_id: int, account_id: int):
 
     updated_account = get_account_by_id(user_id, account_id)
 
-    await safe_edit_message_text(
+    await safe_edit_or_reply(
         query,
         build_account_check_result_text(updated_account, proxy, result),
         reply_markup=build_account_card_keyboard(account_id, has_proxy=True),
@@ -352,7 +380,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data == "account:add":
         context.user_data.clear()
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "➕ Добавление аккаунта\n\n"
             "Сначала выбери рынок аккаунта.\n\n"
@@ -368,7 +396,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         context.user_data["awaiting_account_cookies"] = True
         context.user_data["awaiting_account_market"] = market_code
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "➕ Добавление аккаунта\n\n"
             f"Рынок: {humanize_account_market(market_code)}\n\n"
@@ -393,14 +421,14 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await safe_edit_message_text(
+            await safe_edit_or_reply(
                 query,
                 "Аккаунт не найден.",
                 reply_markup=_build_not_found_markup(),
             )
             return
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "🌍 Смена рынка аккаунта\n\n"
             f"Аккаунт: {account_display_name(account)}\n"
@@ -416,7 +444,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
         account = get_account_by_id(user_id, account_id)
         if not account:
-            await safe_edit_message_text(
+            await safe_edit_or_reply(
                 query,
                 "Аккаунт не найден.",
                 reply_markup=_build_not_found_markup(),
@@ -441,7 +469,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account_id = int(data.split(":")[-1])
         account = get_account_by_id(user_id, account_id)
         if not account:
-            await safe_edit_message_text(query, "Аккаунт не найден.")
+            await safe_edit_or_reply(query, "Аккаунт не найден.")
             return
 
         update_account_proxy(user_id, account_id, None)
@@ -458,7 +486,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await safe_edit_message_text(
+            await safe_edit_or_reply(
                 query,
                 "Аккаунт не найден.",
                 reply_markup=_build_not_found_markup(),
@@ -468,7 +496,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.clear()
         context.user_data["awaiting_account_profile_rename"] = account_id
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "✏️ Изменение имени профиля\n\n"
             "Пришли новое имя одним следующим сообщением.\n\n"
@@ -486,13 +514,13 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await safe_edit_message_text(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
+            await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
             return
 
         context.user_data.clear()
         context.user_data["awaiting_account_cookies_update"] = account_id
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             "♻️ Обновление cookies\n\n"
             "Пришли новые cookies:\n"
@@ -511,10 +539,10 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await safe_edit_message_text(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
+            await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
             return
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             f"Ты точно хочешь удалить аккаунт «{account_display_name(account)}»?",
             reply_markup=build_account_delete_confirm_keyboard(account_id),
@@ -526,7 +554,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         account = get_account_by_id(user_id, account_id)
 
         if not account:
-            await safe_edit_message_text(query, "Аккаунт уже не найден.", reply_markup=_build_not_found_markup())
+            await safe_edit_or_reply(query, "Аккаунт уже не найден.", reply_markup=_build_not_found_markup())
             return
 
         cleanup_note = await _delete_account_and_profile(
@@ -553,7 +581,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
                 text += f"\n\n{cleanup_note}"
             text += "\n\nСписок аккаунтов теперь пуст."
 
-        await safe_edit_message_text(
+        await safe_edit_or_reply(
             query,
             text,
             reply_markup=build_accounts_keyboard(accounts),
