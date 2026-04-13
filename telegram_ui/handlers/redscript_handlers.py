@@ -14,7 +14,7 @@ from olx.ad_page_parser import parse_ad_page
 from services.redscript_client import RedScriptApiError, check_token, send_mail
 from telegram_ui.menu import build_back_to_menu_keyboard
 
-DEFAULT_COUNTRY = "Румыния"
+DEFAULT_COUNTRY = "Португалия"
 DEFAULT_TYPE = "services"
 DEFAULT_SERVICE = "OLX"
 DEFAULT_VERSION = "2.0"

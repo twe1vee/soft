@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 BASE_URL = "https://api.redscript.info"
-DEFAULT_TIMEOUT_SECONDS = 8
+DEFAULT_TIMEOUT_SECONDS = 20
 
 
 class RedScriptApiError(Exception):
