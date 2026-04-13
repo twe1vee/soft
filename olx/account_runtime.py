@@ -18,9 +18,20 @@ from olx.browser_session import open_olx_browser_context
 
 ACCOUNT_RUNTIME_TTL_SECONDS = 600
 
+BACKGROUND_DB_TOUCH_REASONS = {
+    "dialogs_check",
+}
+
 
 def _runtime_debug(message: str) -> None:
     print(f"[account_runtime] {message}")
+
+
+def _should_persist_last_used_to_db(busy_reason: str | None) -> bool:
+    reason = (busy_reason or "").strip().lower()
+    if not reason:
+        return True
+    return reason not in BACKGROUND_DB_TOUCH_REASONS
 
 
 @dataclass
@@ -43,18 +54,28 @@ class AccountRuntimeEntry:
     closing: bool = False
     deleted: bool = False
 
-    def touch(self) -> None:
+    def touch(self, *, persist_db: bool | None = None) -> None:
         self.last_used_monotonic = time.monotonic()
-        try:
-            touch_account_last_used(account_id=self.account_id)
-        except Exception as exc:
-            _runtime_debug(f"touch_db_failed account_id={self.account_id} error={exc}")
+
+        should_persist = (
+            _should_persist_last_used_to_db(self.busy_reason)
+            if persist_db is None
+            else bool(persist_db)
+        )
+
+        if should_persist:
+            try:
+                touch_account_last_used(account_id=self.account_id)
+            except Exception as exc:
+                _runtime_debug(f"touch_db_failed account_id={self.account_id} error={exc}")
+
         runtime = self.runtime or {}
         _runtime_debug(
             f"touch account_id={self.account_id} "
             f"engine={runtime.get('browser_engine')} "
             f"profile_id={runtime.get('gologin_profile_id')} "
-            f"busy_reason={self.busy_reason}"
+            f"busy_reason={self.busy_reason} "
+            f"persist_db={should_persist}"
         )
 
     def is_expired(self, ttl_seconds: int = ACCOUNT_RUNTIME_TTL_SECONDS) -> bool:
@@ -187,6 +208,7 @@ async def get_account_runtime(
 
         entry.touch()
         return entry
+
 
 @asynccontextmanager
 async def use_account_runtime_page(

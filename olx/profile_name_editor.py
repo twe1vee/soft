@@ -9,18 +9,34 @@ from olx.account_runtime import use_account_runtime_page
 USER_SETTINGS_URL = "https://www.olx.pt/myaccount/user-settings/"
 
 EDIT_PROFILE_TOGGLE_SELECTORS = [
+    'button[aria-expanded] div[data-testid="settings.set_contact__toggle"]',
+    'button[aria-expanded]:has(div[data-testid="settings.set_contact__toggle"])',
     '[data-testid="settings.set_contact__toggle"]',
     'text="Editar perfil"',
 ]
 
+EDIT_PROFILE_BUTTON_SELECTORS = [
+    'button[aria-expanded]:has(div[data-testid="settings.set_contact__toggle"])',
+    'button:has(div[data-testid="settings.set_contact__toggle"])',
+    'button[aria-expanded]',
+]
+
 NAME_INPUT_SELECTORS = [
-    'input[name="userName"]',
     'input[aria-label="O teu nome no OLX"]',
+    'input[name="userName"]',
+    'input[type="text"][name="userName"]',
 ]
 
 SAVE_BUTTON_SELECTORS = [
+    'button[type="submit"]:has-text("Guardar")',
+    'button[data-nx-name="NexusButton"]:has-text("Guardar")',
     'button[type="submit"]',
     'button[data-nx-name="NexusButton"]',
+]
+
+SUCCESS_DIALOG_SELECTORS = [
+    '[data-testid="dialog"]',
+    '[data-testid="dialog"] [data-nx-name="P4"]',
 ]
 
 SUCCESS_TEXT = "Guardámos as tuas alterações"
@@ -71,6 +87,22 @@ async def _open_user_settings_page(page) -> None:
         await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=15000)
 
 
+async def _is_edit_section_expanded(page) -> bool:
+    for selector in EDIT_PROFILE_BUTTON_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if not await locator.is_visible():
+                continue
+            expanded = await locator.get_attribute("aria-expanded")
+            if (expanded or "").lower() == "true":
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _expand_edit_profile_section_if_needed(page) -> None:
     input_locator = await _find_first(page, NAME_INPUT_SELECTORS)
     if input_locator is not None:
@@ -80,28 +112,90 @@ async def _expand_edit_profile_section_if_needed(page) -> None:
         except Exception:
             pass
 
-    toggle = await _wait_for_visible(page, EDIT_PROFILE_TOGGLE_SELECTORS, timeout=10000)
-    await toggle.click()
-    await page.wait_for_timeout(800)
+    if await _is_edit_section_expanded(page):
+        await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=10000)
+        return
 
-    await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=10000)
+    toggle_button = None
+
+    for selector in EDIT_PROFILE_BUTTON_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if not await locator.is_visible():
+                continue
+            toggle_button = locator
+            break
+        except Exception:
+            continue
+
+    if toggle_button is None:
+        toggle_fallback = await _wait_for_visible(page, EDIT_PROFILE_TOGGLE_SELECTORS, timeout=10000)
+        try:
+            toggle_button = toggle_fallback.locator("xpath=ancestor::button[1]").first
+            if await toggle_button.count() == 0:
+                toggle_button = toggle_fallback
+        except Exception:
+            toggle_button = toggle_fallback
+
+    try:
+        await toggle_button.scroll_into_view_if_needed()
+    except Exception:
+        pass
+
+    try:
+        await toggle_button.click(timeout=5000)
+    except Exception:
+        try:
+            await toggle_button.click(force=True, timeout=5000)
+        except Exception:
+            box = await toggle_button.bounding_box()
+            if not box:
+                raise
+            await page.mouse.click(
+                box["x"] + box["width"] / 2,
+                box["y"] + box["height"] / 2,
+            )
+
+    await page.wait_for_timeout(900)
+    await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=12000)
 
 
 async def _get_name_input(page):
-    return await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=10000)
+    return await _wait_for_visible(page, NAME_INPUT_SELECTORS, timeout=12000)
 
 
 async def _get_save_button(page):
-    button = await _wait_for_visible(page, SAVE_BUTTON_SELECTORS, timeout=10000)
-    try:
-        text = ((await button.inner_text()) or "").strip()
-        if text and "Guardar" not in text:
-            alt = page.get_by_role("button", name="Guardar").first
-            await alt.wait_for(state="visible", timeout=3000)
-            return alt
-    except Exception:
-        pass
-    return button
+    for selector in SAVE_BUTTON_SELECTORS:
+        try:
+            button = page.locator(selector).first
+            if await button.count() == 0:
+                continue
+            if not await button.is_visible():
+                continue
+
+            try:
+                text = ((await button.inner_text()) or "").strip()
+            except Exception:
+                text = ""
+
+            if text and "Guardar" in text:
+                return button
+
+            if selector in (
+                'button[type="submit"]',
+                'button[data-nx-name="NexusButton"]',
+            ):
+                continue
+
+            return button
+        except Exception:
+            continue
+
+    alt = page.get_by_role("button", name="Guardar").first
+    await alt.wait_for(state="visible", timeout=5000)
+    return alt
 
 
 async def _read_current_name(page) -> str:
@@ -119,9 +213,20 @@ async def _apply_random_human_delay(page) -> float:
 async def _fill_new_name(page, new_name: str) -> None:
     name_input = await _get_name_input(page)
 
+    try:
+        await name_input.scroll_into_view_if_needed()
+    except Exception:
+        pass
+
     await name_input.click()
+
     try:
         await name_input.press("Control+A")
+    except Exception:
+        pass
+
+    try:
+        await name_input.fill("")
     except Exception:
         pass
 
@@ -132,11 +237,11 @@ async def _fill_new_name(page, new_name: str) -> None:
         await name_input.press("Tab")
     except Exception:
         try:
-            await name_input.blur()
+            await name_input.evaluate("(el) => el.blur()")
         except Exception:
             pass
 
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(700)
 
 
 async def _wait_save_enabled(button, timeout_ms: int = 10000) -> bool:
@@ -166,16 +271,16 @@ async def _wait_save_enabled(button, timeout_ms: int = 10000) -> bool:
 
 
 async def _wait_success_dialog(page, timeout_ms: int = 12000) -> bool:
-    success_locator = page.locator('[data-testid="dialog"]').filter(has_text=SUCCESS_TEXT).first
-    success_text_locator = page.locator('[data-nx-name="P4"]').filter(has_text=SUCCESS_TEXT).first
+    for selector in SUCCESS_DIALOG_SELECTORS:
+        try:
+            locator = page.locator(selector).filter(has_text=SUCCESS_TEXT).first
+            await locator.wait_for(state="visible", timeout=timeout_ms)
+            return True
+        except Exception:
+            continue
 
     try:
-        await success_locator.wait_for(state="visible", timeout=timeout_ms)
-        return True
-    except Exception:
-        pass
-
-    try:
+        success_text_locator = page.locator('[data-nx-name="P4"]').filter(has_text=SUCCESS_TEXT).first
         await success_text_locator.wait_for(state="visible", timeout=timeout_ms)
         return True
     except Exception:
@@ -267,7 +372,16 @@ async def update_olx_profile_name(
                 result["error"] = "Кнопка Guardar не стала активной после изменения имени."
                 return result
 
-            await save_button.click()
+            try:
+                await save_button.scroll_into_view_if_needed()
+            except Exception:
+                pass
+
+            try:
+                await save_button.click(timeout=5000)
+            except Exception:
+                await save_button.click(force=True, timeout=5000)
+
             await page.wait_for_timeout(600)
 
             if not await _wait_success_dialog(page, timeout_ms=12000):
