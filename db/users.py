@@ -22,6 +22,15 @@ def get_active_users() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_user_by_id(user_id: int) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (int(user_id),))
+    row = cursor.fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
+
 def get_user_by_telegram_id(telegram_id: int) -> dict | None:
     conn = get_connection()
     cursor = conn.cursor()
@@ -127,3 +136,67 @@ def get_or_create_user(
         "last_name": last_name,
         "last_active_at": int(time.time()),
     }
+
+
+def update_user_redscript_token(user_id: int, access_token: str | None) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET redscript_access_token = ?
+        WHERE id = ?
+        """,
+        ((access_token or "").strip() or None, int(user_id)),
+    )
+    conn.commit()
+    changed = cursor.rowcount > 0
+    conn.close()
+    return changed
+
+
+def clear_user_redscript_token(user_id: int) -> bool:
+    return update_user_redscript_token(user_id, None)
+
+
+def update_user_redscript_defaults(
+    user_id: int,
+    *,
+    initials: str | None = None,
+    address: str | None = None,
+    mail_service: str | None = None,
+    country: str | None = None,
+    type_value: str | None = None,
+    service: str | None = None,
+    version: str | None = None,
+) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE users
+        SET
+            redscript_initials = ?,
+            redscript_address = ?,
+            redscript_mail_service = ?,
+            redscript_country = ?,
+            redscript_type = ?,
+            redscript_service = ?,
+            redscript_version = ?
+        WHERE id = ?
+        """,
+        (
+            (initials or "").strip() or None,
+            (address or "").strip() or None,
+            (mail_service or "").strip() or None,
+            (country or "").strip() or None,
+            (type_value or "").strip() or None,
+            (service or "").strip() or None,
+            (version or "").strip() or None,
+            int(user_id),
+        ),
+    )
+    conn.commit()
+    changed = cursor.rowcount > 0
+    conn.close()
+    return changed

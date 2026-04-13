@@ -30,6 +30,10 @@ from telegram_ui.handlers.proxy_handlers import (
     handle_proxies_text,
     handle_proxies_document,
 )
+from telegram_ui.handlers.redscript_handlers import (
+    handle_redscript_callback,
+    handle_redscript_text,
+)
 from telegram_ui.handlers.template_handlers import (
     handle_template_callback,
     handle_editing_template_text,
@@ -48,6 +52,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("menu:"):
         await handle_menu_callback(update, context, data)
+        return
+
+    if data.startswith("redscript:"):
+        await handle_redscript_callback(update, context, data)
         return
 
     if data.startswith("proxy:"):
@@ -82,6 +90,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     context.user_data["current_user"] = get_current_user(update)
+
+    redscript_states = [
+        "awaiting_redscript_api_token",
+        "awaiting_redscript_initials",
+        "awaiting_redscript_address",
+        "awaiting_redscript_mail_service",
+        "awaiting_redscript_country",
+        "awaiting_redscript_type",
+        "awaiting_redscript_service",
+        "awaiting_redscript_version",
+        "awaiting_redscript_send_email",
+        "awaiting_redscript_send_name",
+        "awaiting_redscript_send_amount",
+        "awaiting_redscript_send_image",
+    ]
+    if any(context.user_data.get(key) for key in redscript_states):
+        await handle_redscript_text(update, context, text)
+        return
 
     if context.user_data.get("editing_template"):
         await handle_editing_template_text(update, context, text)

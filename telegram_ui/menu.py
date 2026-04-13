@@ -7,6 +7,9 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("Обработать ссылки 🔗", callback_data="menu:process_links"),
         ],
         [
+            InlineKeyboardButton("📨 Отправить письмо", callback_data="menu:redscript"),
+        ],
+        [
             InlineKeyboardButton("Аккаунт 👤", callback_data="menu:account"),
             InlineKeyboardButton("Прокси 🌐", callback_data="menu:proxies"),
             InlineKeyboardButton("Шаблоны 📝", callback_data="menu:templates"),

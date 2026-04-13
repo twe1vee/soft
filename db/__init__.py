@@ -1,12 +1,16 @@
 from .database import init_db, get_connection, DB_FILE
 
 from .users import (
+    get_user_by_id,
     get_user_by_telegram_id,
     create_user,
     get_or_create_user,
     get_active_users,
     touch_user_last_active,
     update_user_profile_fields,
+    update_user_redscript_token,
+    clear_user_redscript_token,
+    update_user_redscript_defaults,
 )
 
 from .ads import (
@@ -93,12 +97,16 @@ __all__ = [
     "init_db",
     "get_connection",
     "DB_FILE",
+    "get_user_by_id",
     "get_user_by_telegram_id",
     "create_user",
     "get_or_create_user",
     "get_active_users",
     "touch_user_last_active",
     "update_user_profile_fields",
+    "update_user_redscript_token",
+    "clear_user_redscript_token",
+    "update_user_redscript_defaults",
     "ad_exists",
     "ad_seen_globally",
     "count_global_ad_views",

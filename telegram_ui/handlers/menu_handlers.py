@@ -5,6 +5,7 @@ from db import init_db
 from telegram_ui.handlers.proxy_handlers import show_proxies_screen
 from telegram_ui.handlers.account_handlers import show_accounts_screen
 from telegram_ui.handlers.common import show_main_menu, get_current_user
+from telegram_ui.handlers.redscript_handlers import show_redscript_screen
 from telegram_ui.handlers.template_handlers import show_templates_screen
 from telegram_ui.menu import build_back_to_menu_keyboard
 
@@ -54,6 +55,12 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.clear()
         context.user_data["current_user"] = current_user
         await show_templates_screen(query, user_id)
+        return
+
+    if data == "menu:redscript":
+        context.user_data.clear()
+        context.user_data["current_user"] = current_user
+        await show_redscript_screen(query, user_id)
         return
 
     if data == "menu:process_links":

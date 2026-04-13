@@ -28,6 +28,14 @@ def init_db():
             first_name TEXT,
             last_name TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
+            redscript_access_token TEXT,
+            redscript_initials TEXT,
+            redscript_address TEXT,
+            redscript_mail_service TEXT,
+            redscript_country TEXT,
+            redscript_type TEXT,
+            redscript_service TEXT,
+            redscript_version TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_active_at INTEGER
         )
@@ -189,6 +197,30 @@ def init_db():
 
     if not _column_exists(cursor, "users", "last_active_at"):
         cursor.execute("ALTER TABLE users ADD COLUMN last_active_at INTEGER")
+
+    if not _column_exists(cursor, "users", "redscript_access_token"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_access_token TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_initials"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_initials TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_address"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_address TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_mail_service"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_mail_service TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_country"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_country TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_type"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_type TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_service"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_service TEXT")
+
+    if not _column_exists(cursor, "users", "redscript_version"):
+        cursor.execute("ALTER TABLE users ADD COLUMN redscript_version TEXT")
 
     if not _column_exists(cursor, "templates", "image_path"):
         cursor.execute("ALTER TABLE templates ADD COLUMN image_path TEXT")
