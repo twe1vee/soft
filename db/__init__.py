@@ -19,6 +19,7 @@ from .ads import (
     count_global_ad_views,
     save_ad,
     update_ad_status,
+    update_ad_external_id,
     update_ad_draft,
     get_last_ad,
     get_ad_by_id,
@@ -163,4 +164,5 @@ __all__ = [
     "mark_conversation_message_notified",
     "get_ad_by_user_account_seller_title",
     "get_ad_by_user_ad_external_id",
+    "update_ad_external_id",
 ]
