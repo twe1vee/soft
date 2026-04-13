@@ -10,7 +10,7 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
-from olx.proxy_check import check_proxy_alive
+from jobs import ensure_check_jobs_started
 from telegram_ui.handlers.common import get_current_user
 
 
@@ -318,68 +318,19 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        await safe_edit_message_text(
-            query,
-            "⏳ Проверяю прокси...\n\n"
-            f"Прокси: {proxy_short(proxy_text, max_len=50)}"
+        manager = await ensure_check_jobs_started(context.application, worker_count=2)
+        await manager.enqueue_proxy_check(
+            user_id=user_id,
+            proxy_id=proxy_id,
+            chat_id=query.message.chat_id,
+            source_message_id=query.message.message_id,
         )
-
-        result = await check_proxy_alive(
-            proxy_text=proxy_text,
-            headless=True,
-        )
-
-        update_proxy_last_check(user_id, proxy_id)
-
-        result_status = normalize_proxy_status_for_db(result.get("status"))
-        update_proxy_status(user_id, proxy_id, result_status)
-
-        updated_proxy = get_proxy_by_id(user_id, proxy_id)
-        ui_status = humanize_proxy_status(updated_proxy.get("status"))
-
-        raw_error = (result.get("error") or "").strip()
-
-        human_error = None
-        if raw_error:
-            lower_error = raw_error.lower()
-
-            if "only socks5" in lower_error or "поддерживается только socks5" in lower_error:
-                human_error = "Поддерживается только SOCKS5."
-            elif "timeout" in lower_error:
-                human_error = "Прокси не ответил вовремя."
-            elif "407" in lower_error or "proxy authentication" in lower_error or "auth" in lower_error:
-                human_error = "Неверный логин или пароль прокси."
-            elif "403" in lower_error:
-                human_error = "Доступ через этот прокси был отклонён."
-            elif "tunnel" in lower_error:
-                human_error = "Не удалось установить соединение через прокси."
-            elif "dns" in lower_error or "name resolution" in lower_error:
-                human_error = "Не удалось определить адрес прокси."
-            elif "connection refused" in lower_error:
-                human_error = "Прокси отклонил подключение."
-            elif "connection reset" in lower_error:
-                human_error = "Соединение через прокси было сброшено."
-            elif "network" in lower_error:
-                human_error = "Ошибка сети при проверке прокси."
-            else:
-                human_error = "Прокси не прошёл проверку."
-
-        text_lines = [
-            "🔎 Проверка прокси завершена",
-            "",
-            f"Прокси: {proxy_short(updated_proxy.get('proxy_text', ''), max_len=70)}",
-            f"Статус: {ui_status}",
-        ]
-
-        if human_error and ui_status != "живой":
-            text_lines.extend([
-                "",
-                f"Причина: {human_error}",
-            ])
 
         await safe_edit_message_text(
             query,
-            "\n".join(text_lines),
+            "⏳ Проверка прокси поставлена в очередь.\n\n"
+            f"Прокси: {proxy_short(proxy_text, max_len=50)}\n\n"
+            "Результат пришлю следующим сообщением.",
             reply_markup=build_proxy_card_keyboard(proxy_id),
         )
         return

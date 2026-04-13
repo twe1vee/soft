@@ -12,8 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from db import init_db
-from jobs.send_jobs import ensure_send_jobs_started, get_send_jobs_manager
+from jobs import ensure_check_jobs_started, ensure_send_jobs_started
 from olx.dialogs_jobs import start_dialogs_jobs
 from telegram_ui.handlers import (
     button_handler,
@@ -40,6 +39,7 @@ def env_int(name: str, default: int) -> int:
 
 
 SEND_WORKERS = env_int("SEND_WORKERS", 2)
+CHECK_WORKERS = env_int("CHECK_WORKERS", 2)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -51,37 +51,37 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"[telegram_error] {context.error}")
-
-
-async def post_init(application: Application):
+async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(
         [
-            BotCommand("menu", "Открыть главное меню"),
             BotCommand("start", "Запустить бота"),
-            BotCommand("account", "Аккаунт"),
-            BotCommand("templates", "Шаблоны"),
-            BotCommand("settings", "Настройка софта"),
+            BotCommand("menu", "Открыть меню"),
         ]
     )
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    await ensure_send_jobs_started(application, worker_count=SEND_WORKERS)
 
 
-async def post_shutdown(application: Application):
-    manager = get_send_jobs_manager(application)
-    if manager is not None:
-        await manager.stop()
+async def post_shutdown(application: Application) -> None:
+    send_manager = application.bot_data.get("send_jobs_manager")
+    if send_manager is not None:
+        try:
+            await send_manager.stop()
+        except Exception as exc:
+            print(f"[bot] send_jobs stop failed: {exc}")
+
+    check_manager = application.bot_data.get("check_jobs_manager")
+    if check_manager is not None:
+        try:
+            await check_manager.stop()
+        except Exception as exc:
+            print(f"[bot] check_jobs stop failed: {exc}")
 
 
-def main():
+def main() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN не задан в переменных окружения")
+        raise RuntimeError("Не найден BOT_TOKEN в .env")
 
-    init_db()
-
-    app = (
+    application = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
@@ -89,22 +89,41 @@ def main():
         .build()
     )
 
-    app.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("menu", menu_handler))
 
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("menu", menu_handler))
-    app.add_handler(CommandHandler("pending", pending_handler))
-    app.add_handler(CommandHandler("last", last_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    application.add_handler(
+        MessageHandler(
+            filters.Document.ALL & ~filters.COMMAND,
+            document_handler,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler,
+        )
+    )
 
-    start_dialogs_jobs(app)
+    application.add_error_handler(last_handler)
 
-    print("Bot is running...")
-    app.run_polling(drop_pending_updates=True)
+    async def startup(app: Application) -> None:
+        await ensure_send_jobs_started(app, worker_count=SEND_WORKERS)
+        await ensure_check_jobs_started(app, worker_count=CHECK_WORKERS)
+        start_dialogs_jobs(app)
+        print("Bot is running...")
+
+    application.post_init = startup
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
 
 
 if __name__ == "__main__":
+    from telegram import Update
+
     main()

@@ -18,8 +18,8 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
+from jobs import ensure_check_jobs_started
 from olx.account_runtime import close_account_runtime, mark_account_runtime_deleted
-from olx.account_session import check_account_alive
 from olx.profile_manager_gologin import (
     delete_account_gologin_profile,
     sync_account_profile_cookies,
@@ -276,103 +276,6 @@ async def _handle_set_proxy(query, user_id: int, account_id: int, proxy_id: int)
     await show_account_card(query, user_id, account_id)
 
 
-async def _handle_check_account(query, user_id: int, account_id: int):
-    account = get_account_by_id(user_id, account_id)
-
-    if not account:
-        await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
-        return
-
-    market_code = _normalize_market(account.get("market"))
-
-    proxy_id = account.get("proxy_id")
-    if not proxy_id:
-        update_account_status(user_id, account_id, "missing_proxy")
-        update_account_last_check(user_id, account_id)
-
-        await safe_edit_or_reply(
-            query,
-            "❌ У аккаунта не привязан прокси.\n\n"
-            "Сначала привяжи 1 прокси к этому аккаунту.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Привязать прокси", callback_data=f"account:bind_proxy:{account_id}")],
-                [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
-            ]),
-        )
-        return
-
-    proxy = get_proxy_by_id(user_id, proxy_id)
-    if not proxy:
-        update_account_status(user_id, account_id, "proxy_not_found")
-        update_account_last_check(user_id, account_id)
-
-        await safe_edit_or_reply(
-            query,
-            "❌ Привязанный прокси не найден.\n\n"
-            "Привяжи другой прокси.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Выбрать другой прокси", callback_data=f"account:bind_proxy:{account_id}")],
-                [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
-            ]),
-        )
-        return
-
-    cookies_json = account.get("cookies_json")
-    proxy_text = proxy.get("proxy_text")
-
-    if not cookies_json:
-        update_account_status(user_id, account_id, "missing_cookies")
-        update_account_last_check(user_id, account_id)
-
-        await safe_edit_or_reply(
-            query,
-            "❌ У аккаунта отсутствуют cookies_json.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
-            ]),
-        )
-        return
-
-    await safe_edit_or_reply(
-        query,
-        "⏳ Проверяю аккаунт через браузер и привязанный proxy...\n\n"
-        f"Аккаунт: {account_display_name(account)}\n"
-        f"Рынок: {humanize_account_market(market_code)}\n"
-        f"Прокси: {short_proxy_text(proxy_text or '', max_len=50)}"
-    )
-
-    result = await check_account_alive(
-        cookies_json=cookies_json,
-        proxy_text=proxy_text,
-        headless=True,
-        user_id=user_id,
-        account_id=account_id,
-        olx_profile_name=account.get("olx_profile_name"),
-        market_code=market_code,
-    )
-
-    profile_name = (result.get("profile_name") or "").strip()
-    if profile_name:
-        update_account_profile_name(user_id, account_id, profile_name)
-
-    result_status = normalize_account_status_for_db(result.get("status"))
-    update_account_status(user_id, account_id, result_status)
-    update_account_last_check(user_id, account_id)
-    update_proxy_last_check(user_id, proxy["id"])
-
-    normalized_proxy_status = normalize_proxy_status_from_account_check(result_status)
-    update_proxy_status(user_id, proxy["id"], normalized_proxy_status)
-
-    updated_account = get_account_by_id(user_id, account_id)
-
-    await safe_edit_or_reply(
-        query,
-        build_account_check_result_text(updated_account, proxy, result),
-        reply_markup=build_account_card_keyboard(account_id, has_proxy=True),
-    )
-
-
 async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     query = update.callback_query
     current_user = get_current_user(update)
@@ -478,7 +381,36 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("account:check:"):
         account_id = int(data.split(":")[-1])
-        await _handle_check_account(query, user_id, account_id)
+        account = get_account_by_id(user_id, account_id)
+
+        if not account:
+            await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
+            return
+
+        manager = await ensure_check_jobs_started(context.application, worker_count=2)
+        await manager.enqueue_account_check(
+            user_id=user_id,
+            account_id=account_id,
+            chat_id=query.message.chat_id,
+            source_message_id=query.message.message_id,
+        )
+
+        proxy_text = "не привязан"
+        proxy_id = account.get("proxy_id")
+        if proxy_id:
+            proxy = get_proxy_by_id(user_id, proxy_id)
+            if proxy:
+                proxy_text = short_proxy_text(proxy.get("proxy_text", ""), max_len=50)
+
+        await safe_edit_or_reply(
+            query,
+            "⏳ Проверка аккаунта поставлена в очередь.\n\n"
+            f"Аккаунт: {account_display_name(account)}\n"
+            f"Рынок: {humanize_account_market(account.get('market'))}\n"
+            f"Прокси: {proxy_text}\n\n"
+            "Результат пришлю следующим сообщением.",
+            reply_markup=build_account_card_keyboard(account_id, has_proxy=bool(account.get("proxy_id"))),
+        )
         return
 
     if data.startswith("account:rename:"):

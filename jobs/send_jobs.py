@@ -16,6 +16,7 @@ from db import (
     get_proxy_by_id,
     update_account_last_check,
     update_account_status,
+    update_ad_external_id,
     update_ad_status,
     update_pending_action_status,
     update_proxy_last_check,
@@ -414,6 +415,18 @@ class SendJobsManager:
             )
 
             result["market_code"] = result.get("market_code") or market_code
+
+            detected_ad_external_id = (result.get("ad_external_id") or "").strip()
+            if detected_ad_external_id:
+                update_ad_external_id(
+                    job.user_id,
+                    job.ad_row_id,
+                    detected_ad_external_id,
+                )
+                print(
+                    f"[send_jobs] ad_external_id_saved "
+                    f"job_id={job.job_id} ad_row_id={job.ad_row_id} ad_external_id={detected_ad_external_id}"
+                )
 
             send_status = result.get("status") or "unknown_error"
             retry_used = job.attempt > 1

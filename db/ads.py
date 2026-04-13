@@ -1,7 +1,6 @@
 from db.database import get_connection
 
 
-
 def _norm_text(value: str | None) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
@@ -70,6 +69,7 @@ def get_ad_by_user_account_seller_title(
 
     return None
 
+
 def get_ad_by_user_ad_external_id(
     user_id: int,
     ad_external_id: str | None,
@@ -92,6 +92,7 @@ def get_ad_by_user_ad_external_id(
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
 
 def ad_exists(user_id: int, ad_id: str | None) -> bool:
     if not ad_id:
@@ -237,6 +238,28 @@ def update_ad_status(user_id: int, ad_db_id: int, new_status: str):
         SET status = ?
         WHERE id = ? AND user_id = ?
     """, (new_status, ad_db_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def update_ad_external_id(
+    user_id: int,
+    ad_db_id: int,
+    ad_external_id: str | None,
+):
+    value = (ad_external_id or "").strip()
+    if not value:
+        return
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE ads
+        SET ad_id = ?
+        WHERE id = ? AND user_id = ?
+    """, (value, ad_db_id, user_id))
 
     conn.commit()
     conn.close()
