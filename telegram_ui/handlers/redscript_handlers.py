@@ -5,9 +5,12 @@ from telegram.ext import ContextTypes
 
 from db import (
     get_user_by_id,
+    get_user_accounts,
+    get_proxy_by_id,
     update_user_redscript_defaults,
     update_user_redscript_token,
 )
+from olx.ad_page_parser import parse_ad_page
 from services.redscript_client import RedScriptApiError, check_token, send_mail
 from telegram_ui.menu import build_back_to_menu_keyboard
 
@@ -37,10 +40,8 @@ def _clear_redscript_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
         "awaiting_redscript_type",
         "awaiting_redscript_service",
         "awaiting_redscript_version",
+        "awaiting_redscript_ad_url",
         "awaiting_redscript_send_email",
-        "awaiting_redscript_send_name",
-        "awaiting_redscript_send_amount",
-        "awaiting_redscript_send_image",
         "redscript_send_payload",
     ]
     for key in keys:
@@ -75,6 +76,34 @@ def _get_user_settings(user: dict) -> dict:
         "service": (user.get("redscript_service") or DEFAULT_SERVICE).strip(),
         "version": (user.get("redscript_version") or DEFAULT_VERSION).strip(),
     }
+
+
+def _pick_account_for_parse(user_id: int) -> tuple[dict | None, dict | None]:
+    accounts = get_user_accounts(user_id)
+    if not accounts:
+        return None, None
+
+    preferred_statuses = {"working", "connected", "checked", "new", "loading_retry"}
+    sorted_accounts = sorted(
+        accounts,
+        key=lambda a: (
+            0 if (a.get("status") or "").strip().lower() in preferred_statuses else 1,
+            a.get("id") or 999999,
+        ),
+    )
+
+    for account in sorted_accounts:
+        proxy_id = account.get("proxy_id")
+        if not proxy_id:
+            continue
+        proxy = get_proxy_by_id(user_id, proxy_id)
+        if not proxy or not proxy.get("proxy_text"):
+            continue
+        if not account.get("cookies_json"):
+            continue
+        return account, proxy
+
+    return None, None
 
 
 async def show_redscript_screen(update_or_query, user_id: int):
@@ -205,23 +234,12 @@ async def handle_redscript_callback(update: Update, context: ContextTypes.DEFAUL
             return
 
         context.user_data["redscript_send_payload"] = {}
-        context.user_data["awaiting_redscript_send_email"] = True
+        context.user_data["awaiting_redscript_ad_url"] = True
         await query.edit_message_text(
             "✉️ Отправка письма\n\n"
-            "Пришли email продавца.",
+            "Пришли ссылку на объявление OLX PT.",
             reply_markup=build_back_to_menu_keyboard(),
         )
-        return
-
-    if data == "redscript:send_skip_image":
-        payload = context.user_data.get("redscript_send_payload") or {}
-        payload["image"] = ""
-        context.user_data["redscript_send_payload"] = payload
-        await _send_redscript_mail_from_payload(update, context)
-        return
-
-    if data == "redscript:send_confirm":
-        await _send_redscript_mail_from_payload(update, context)
         return
 
 
@@ -282,88 +300,64 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-    payload = context.user_data.get("redscript_send_payload") or {}
+    if context.user_data.get("awaiting_redscript_ad_url"):
+        _clear_redscript_flow(context)
+
+        ad_url = text.strip()
+        account, proxy = _pick_account_for_parse(user_id)
+        if not account or not proxy:
+            await update.message.reply_text(
+                "Не найден подходящий аккаунт с cookies и proxy для парсинга объявления.",
+                reply_markup=build_back_to_menu_keyboard(),
+            )
+            return
+
+        parse_result = await parse_ad_page(
+            cookies_json=account.get("cookies_json") or "",
+            proxy_text=proxy.get("proxy_text") or "",
+            ad_url=ad_url,
+            headless=True,
+            user_id=user_id,
+            account_id=account.get("id"),
+            olx_profile_name=account.get("olx_profile_name"),
+            market_code="olx_pt",
+        )
+
+        if not parse_result.get("ok"):
+            await update.message.reply_text(
+                f"Ошибка парсинга объявления:\n{parse_result.get('error') or parse_result.get('status')}",
+                reply_markup=build_back_to_menu_keyboard(),
+            )
+            return
+
+        payload = {
+            "ad_url": ad_url,
+            "name": parse_result.get("title"),
+            "amount": parse_result.get("amount"),
+            "image": parse_result.get("image"),
+        }
+        context.user_data["redscript_send_payload"] = payload
+        context.user_data["awaiting_redscript_send_email"] = True
+
+        await update.message.reply_text(
+            "Объявление распознано.\n\n"
+            f"Название: {payload.get('name') or '—'}\n"
+            f"Сумма: {payload.get('amount') or '—'}\n"
+            f"Фото: {'найдено' if payload.get('image') else 'не найдено'}\n\n"
+            "Теперь пришли почту продавца.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
 
     if context.user_data.get("awaiting_redscript_send_email"):
         _clear_redscript_flow(context)
+
+        payload = context.user_data.get("redscript_send_payload") or {}
         payload["email"] = text.strip()
         context.user_data["redscript_send_payload"] = payload
-        context.user_data["awaiting_redscript_send_name"] = True
-        await update.message.reply_text(
-            "Пришли название / заголовок.",
-            reply_markup=build_back_to_menu_keyboard(),
-        )
+
+        await _send_redscript_mail_from_payload(update, context)
         return
-
-    if context.user_data.get("awaiting_redscript_send_name"):
-        _clear_redscript_flow(context)
-        payload["name"] = text.strip()
-        context.user_data["redscript_send_payload"] = payload
-        context.user_data["awaiting_redscript_send_amount"] = True
-        await update.message.reply_text(
-            "Пришли сумму. Например: 250 или 250 EUR.",
-            reply_markup=build_back_to_menu_keyboard(),
-        )
-        return
-
-    if context.user_data.get("awaiting_redscript_send_amount"):
-        _clear_redscript_flow(context)
-        payload["amount"] = text.strip()
-        context.user_data["redscript_send_payload"] = payload
-        context.user_data["awaiting_redscript_send_image"] = True
-
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Пропустить изображение", callback_data="redscript:send_skip_image")],
-            [InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main")],
-        ])
-
-        await update.message.reply_text(
-            "Пришли ссылку на изображение или пропусти этот шаг.",
-            reply_markup=keyboard,
-        )
-        return
-
-    if context.user_data.get("awaiting_redscript_send_image"):
-        _clear_redscript_flow(context)
-        payload["image"] = text.strip()
-        context.user_data["redscript_send_payload"] = payload
-        await _confirm_redscript_send(update, context)
-        return
-
-
-async def _confirm_redscript_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current_user = context.user_data.get("current_user") or {}
-    user_id = current_user.get("id")
-    user = get_user_by_id(user_id)
-    settings = _get_user_settings(user or {})
-    payload = context.user_data.get("redscript_send_payload") or {}
-
-    text = (
-        "📨 Подтверждение отправки\n\n"
-        f"Email: {payload.get('email') or '—'}\n"
-        f"Провайдер: {settings['mail_service']}\n"
-        f"Страна: {settings['country']}\n"
-        f"Тип: {settings['type']}\n"
-        f"Сервис: {settings['service']}\n"
-        f"Версия: {settings['version']}\n"
-        f"Название: {payload.get('name') or '—'}\n"
-        f"Сумма: {payload.get('amount') or '—'}\n"
-        f"Изображение: {payload.get('image') or 'не указано'}\n"
-        f"Отправитель: {settings['initials'] or 'не задан'}\n"
-        f"Адрес: {settings['address'] or 'не задан'}"
-    )
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Отправить", callback_data="redscript:send_confirm")],
-        [InlineKeyboardButton("⬅️ Вернуться в главное меню", callback_data="menu:main")],
-    ])
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
-    else:
-        await update.message.reply_text(text, reply_markup=keyboard)
 
 
 async def _send_redscript_mail_from_payload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -375,12 +369,10 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
 
     token = settings["access_token"]
     if not token:
-        target = update.callback_query if update.callback_query else update.message
-        text = "Сначала подключи API ключ."
-        if hasattr(target, "edit_message_text"):
-            await target.edit_message_text(text, reply_markup=build_back_to_menu_keyboard())
-        else:
-            await target.reply_text(text, reply_markup=build_back_to_menu_keyboard())
+        await update.message.reply_text(
+            "Сначала подключи API ключ.",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
         return
 
     try:
@@ -402,26 +394,19 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         _clear_redscript_flow(context)
         context.user_data.pop("redscript_send_payload", None)
 
-        text = f"Ошибка отправки письма:\n{exc}"
-        target = update.callback_query if update.callback_query else update.message
-        if hasattr(target, "edit_message_text"):
-            await target.edit_message_text(text, reply_markup=build_back_to_menu_keyboard())
-        else:
-            await target.reply_text(text, reply_markup=build_back_to_menu_keyboard())
+        await update.message.reply_text(
+            f"Ошибка отправки письма:\n{exc}",
+            reply_markup=build_back_to_menu_keyboard(),
+        )
         return
 
     _clear_redscript_flow(context)
     context.user_data.pop("redscript_send_payload", None)
 
     result_data = result.get("result") or {}
-    text = (
+    await update.message.reply_text(
         "✅ Письмо отправлено.\n\n"
         f"Link: {result_data.get('link') or '—'}\n"
-        f"Short: {result_data.get('short') or '—'}"
+        f"Short: {result_data.get('short') or '—'}",
+        reply_markup=build_back_to_menu_keyboard(),
     )
-
-    target = update.callback_query if update.callback_query else update.message
-    if hasattr(target, "edit_message_text"):
-        await target.edit_message_text(text, reply_markup=build_back_to_menu_keyboard())
-    else:
-        await target.reply_text(text, reply_markup=build_back_to_menu_keyboard())

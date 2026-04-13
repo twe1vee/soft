@@ -100,10 +100,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "awaiting_redscript_type",
         "awaiting_redscript_service",
         "awaiting_redscript_version",
+        "awaiting_redscript_ad_url",
         "awaiting_redscript_send_email",
-        "awaiting_redscript_send_name",
-        "awaiting_redscript_send_amount",
-        "awaiting_redscript_send_image",
     ]
     if any(context.user_data.get(key) for key in redscript_states):
         await handle_redscript_text(update, context, text)
