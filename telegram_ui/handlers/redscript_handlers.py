@@ -320,11 +320,11 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if context.user_data.get("awaiting_redscript_send_email"):
-        _clear_redscript_flow(context)
-
         payload = context.user_data.get("redscript_send_payload") or {}
         payload["email"] = text.strip()
         context.user_data["redscript_send_payload"] = payload
+
+        context.user_data.pop("awaiting_redscript_send_email", None)
 
         await _send_redscript_mail_from_payload(update, context)
         return
