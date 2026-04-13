@@ -10,7 +10,6 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
-from jobs import ensure_check_jobs_started
 from telegram_ui.handlers.common import get_current_user
 
 
@@ -317,6 +316,8 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 reply_markup=build_proxy_card_keyboard(proxy_id),
             )
             return
+
+        from jobs.check_jobs import ensure_check_jobs_started
 
         manager = await ensure_check_jobs_started(context.application, worker_count=2)
         await manager.enqueue_proxy_check(

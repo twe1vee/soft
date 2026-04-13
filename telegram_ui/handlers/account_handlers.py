@@ -18,7 +18,6 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
-from jobs import ensure_check_jobs_started
 from olx.account_runtime import close_account_runtime, mark_account_runtime_deleted
 from olx.profile_manager_gologin import (
     delete_account_gologin_profile,
@@ -28,15 +27,12 @@ from olx.profile_name_editor import normalize_profile_name, update_olx_profile_n
 from telegram_ui.handlers.account_helpers import (
     account_display_name,
     build_account_card_keyboard,
-    build_account_check_result_text,
     build_account_delete_confirm_keyboard,
     build_account_market_select_keyboard,
     build_account_proxy_select_keyboard,
     build_accounts_keyboard,
     humanize_account_market,
     humanize_account_status,
-    normalize_account_status_for_db,
-    normalize_proxy_status_from_account_check,
     parse_cookies_json,
     short_proxy_text,
 )
@@ -386,6 +382,8 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
         if not account:
             await safe_edit_or_reply(query, "Аккаунт не найден.", reply_markup=_build_not_found_markup())
             return
+
+        from jobs.check_jobs import ensure_check_jobs_started
 
         manager = await ensure_check_jobs_started(context.application, worker_count=2)
         await manager.enqueue_account_check(

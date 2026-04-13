@@ -19,18 +19,181 @@ from db import (
 )
 from olx.account_session import check_account_alive
 from olx.proxy_check import check_proxy_alive
-from telegram_ui.handlers.account_helpers import (
-    build_account_check_result_text,
-    normalize_account_status_for_db,
-    normalize_proxy_status_from_account_check,
-)
-from telegram_ui.handlers.proxy_handlers import (
-    humanize_proxy_status,
-    normalize_proxy_status_for_db,
-    proxy_short,
-)
 
 BOT_DATA_KEY = "check_jobs_manager"
+
+
+def _proxy_short(proxy_text: str, max_len: int = 45) -> str:
+    value = (proxy_text or "").strip()
+    if not value:
+        return ""
+
+    lower = value.lower()
+    if "://" in lower:
+        value = value.split("://", 1)[1]
+
+    if "@" in value:
+        right = value.rsplit("@", 1)[1].strip()
+        if right:
+            return right[:max_len] if len(right) > max_len else right
+
+    parts = [p.strip() for p in value.split(":")]
+
+    if len(parts) >= 2:
+        host = parts[0]
+        port = parts[1]
+        host_port = f"{host}:{port}"
+        return host_port[:max_len] if len(host_port) > max_len else host_port
+
+    return value[:max_len] if len(value) > max_len else value
+
+
+def _humanize_proxy_status(status: str | None) -> str:
+    value = (status or "").strip().lower()
+
+    if value in {"working", "connected", "checked"}:
+        return "живой"
+    if value in {"timeout"}:
+        return "timeout"
+    if value in {"unstable"}:
+        return "нестабильный"
+    if value in {"cloudfront_blocked"}:
+        return "заблокирован olx"
+    if value in {"proxy_failed"}:
+        return "ошибка прокси"
+    if value in {"failed", "dead", "invalid_type"}:
+        return "ошибка проверки"
+
+    return "не проверен"
+
+
+def _normalize_proxy_status_for_db(raw_status: str | None) -> str:
+    value = (raw_status or "").strip().lower()
+
+    allowed_statuses = {
+        "working",
+        "timeout",
+        "unstable",
+        "cloudfront_blocked",
+        "proxy_failed",
+        "failed",
+        "invalid_type",
+    }
+
+    if value in allowed_statuses:
+        return value
+
+    return "failed"
+
+
+def _normalize_account_status_for_db(raw_status: str | None) -> str:
+    value = (raw_status or "").strip().lower()
+
+    allowed = {
+        "connected",
+        "working",
+        "not_logged_in",
+        "cloudfront_blocked",
+        "proxy_failed",
+        "timeout",
+        "unstable",
+        "failed",
+        "missing_proxy",
+        "proxy_not_found",
+        "missing_cookies",
+        "dead",
+        "write_blocked",
+        "write_limited",
+        "loading_retry",
+    }
+    if value in allowed:
+        return value
+
+    return "failed"
+
+
+def _normalize_proxy_status_from_account_check(account_status: str | None) -> str:
+    value = (account_status or "").strip().lower()
+
+    if value in {"connected", "working"}:
+        return "working"
+    if value in {"timeout"}:
+        return "timeout"
+    if value in {"unstable"}:
+        return "unstable"
+    if value in {"cloudfront_blocked"}:
+        return "cloudfront_blocked"
+    if value in {"proxy_failed", "proxy_not_found", "missing_proxy"}:
+        return "proxy_failed"
+
+    return "failed"
+
+
+def _humanize_account_market(market: str | None) -> str:
+    value = (market or "").strip().lower()
+    mapping = {
+        "olx_pt": "OLX PT",
+        "olx_pl": "OLX PL",
+    }
+    return mapping.get(value, value or "OLX PT")
+
+
+def _humanize_account_status(status: str | None) -> str:
+    value = (status or "").strip().lower()
+    mapping = {
+        "connected": "живой",
+        "working": "живой",
+        "not_logged_in": "не авторизован",
+        "cloudfront_blocked": "заблокирован olx",
+        "proxy_failed": "ошибка прокси",
+        "timeout": "timeout",
+        "unstable": "нестабильный",
+        "failed": "ошибка проверки",
+        "missing_proxy": "нет прокси",
+        "proxy_not_found": "прокси не найден",
+        "missing_cookies": "нет cookies",
+        "dead": "мёртвый",
+        "write_blocked": "не может отправлять сообщения",
+        "write_limited": "лимит на новые сообщения",
+        "loading_retry": "не прогрузился, был повтор",
+    }
+    return mapping.get(value, value or "неизвестно")
+
+
+def _account_display_name(account: dict) -> str:
+    return (
+        (account.get("olx_profile_name") or "").strip()
+        or (account.get("gologin_profile_name") or "").strip()
+        or f"Аккаунт #{account.get('id')}"
+    )
+
+
+def _build_account_check_result_text(account: dict, proxy: dict, result: dict) -> str:
+    profile_name = _account_display_name(account)
+    status_text = _humanize_account_status(account.get("status"))
+    market_text = _humanize_account_market(account.get("market"))
+    proxy_text = _proxy_short(proxy.get("proxy_text", ""), max_len=60)
+    final_url = result.get("final_url") or "—"
+    page_title = result.get("page_title") or "—"
+    error = result.get("error")
+
+    lines = [
+        "🔎 Проверка аккаунта завершена",
+        "",
+        f"Аккаунт: {profile_name}",
+        f"Рынок: {market_text}",
+        f"Статус: {status_text}",
+        f"Прокси: {proxy_text}",
+        f"Final URL: {final_url}",
+    ]
+
+    if page_title and page_title != "—":
+        lines.append(f"Title: {page_title}")
+
+    if error and status_text != "живой":
+        lines.extend(["", f"Причина: {error}"])
+
+    return "\n".join(lines)
 
 
 @dataclass(slots=True)
@@ -40,10 +203,8 @@ class CheckJob:
     user_id: int
     chat_id: int
     source_message_id: int | None = None
-
     proxy_id: int | None = None
     account_id: int | None = None
-
     status: str = "queued"
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -78,6 +239,19 @@ class CheckJobsManager:
 
             self.started = True
             print(f"[check_jobs] started workers={self.worker_count}")
+
+    async def stop(self) -> None:
+        if not self.worker_tasks:
+            self.started = False
+            return
+
+        for task in self.worker_tasks:
+            task.cancel()
+
+        await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+        self.worker_tasks.clear()
+        self.started = False
+        print("[check_jobs] stopped")
 
     def get_proxy_lock(self, proxy_id: int) -> asyncio.Lock:
         lock = self.proxy_locks.get(proxy_id)
@@ -201,11 +375,11 @@ class CheckJobsManager:
             )
 
             update_proxy_last_check(job.user_id, proxy_id)
-            result_status = normalize_proxy_status_for_db(result.get("status"))
+            result_status = _normalize_proxy_status_for_db(result.get("status"))
             update_proxy_status(job.user_id, proxy_id, result_status)
 
             updated_proxy = get_proxy_by_id(job.user_id, proxy_id) or proxy
-            ui_status = humanize_proxy_status(updated_proxy.get("status"))
+            ui_status = _humanize_proxy_status(updated_proxy.get("status"))
 
             raw_error = (result.get("error") or "").strip()
             human_error = None
@@ -235,7 +409,7 @@ class CheckJobsManager:
             text_lines = [
                 "🔎 Проверка прокси завершена",
                 "",
-                f"Прокси: {proxy_short(updated_proxy.get('proxy_text', ''), max_len=70)}",
+                f"Прокси: {_proxy_short(updated_proxy.get('proxy_text', ''), max_len=70)}",
                 f"Статус: {ui_status}",
             ]
             if human_error and ui_status != "живой":
@@ -332,17 +506,17 @@ class CheckJobsManager:
             if profile_name:
                 update_account_profile_name(job.user_id, account_id, profile_name)
 
-            result_status = normalize_account_status_for_db(result.get("status"))
+            result_status = _normalize_account_status_for_db(result.get("status"))
             update_account_status(job.user_id, account_id, result_status)
             update_account_last_check(job.user_id, account_id)
             update_proxy_last_check(job.user_id, proxy["id"])
 
-            normalized_proxy_status = normalize_proxy_status_from_account_check(result_status)
+            normalized_proxy_status = _normalize_proxy_status_from_account_check(result_status)
             update_proxy_status(job.user_id, proxy["id"], normalized_proxy_status)
 
             updated_account = get_account_by_id(job.user_id, account_id) or account
 
-            text = build_account_check_result_text(updated_account, proxy, result)
+            text = _build_account_check_result_text(updated_account, proxy, result)
             await self._notify_text(
                 chat_id=job.chat_id,
                 text=text,
