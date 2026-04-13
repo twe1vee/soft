@@ -95,11 +95,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "awaiting_redscript_api_token",
         "awaiting_redscript_initials",
         "awaiting_redscript_address",
-        "awaiting_redscript_mail_service",
-        "awaiting_redscript_country",
-        "awaiting_redscript_type",
-        "awaiting_redscript_service",
-        "awaiting_redscript_version",
         "awaiting_redscript_ad_url",
         "awaiting_redscript_send_email",
     ]

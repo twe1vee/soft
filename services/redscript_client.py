@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
+from uuid import uuid4
 
 import requests
 
@@ -20,11 +21,13 @@ class RedScriptApiError(Exception):
         status_code: int | None = None,
         payload: dict | None = None,
         raw_text: str | None = None,
+        is_ambiguous_success: bool = False,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
         self.raw_text = raw_text or ""
+        self.is_ambiguous_success = is_ambiguous_success
 
 
 def _debug_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -47,9 +50,16 @@ def _request_once(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
     except requests.Timeout as exc:
         print(f"[redscript] timeout path={path} error={exc}")
+        ambiguous = path == "/team/sendMail"
         raise RedScriptApiError(
-            f"Сбой сети при запросе к RedScript API: {exc}",
+            (
+                "Ответ от RedScript не пришёл вовремя. "
+                "Письмо могло быть уже отправлено."
+                if ambiguous
+                else f"Сбой сети при запросе к RedScript API: {exc}"
+            ),
             raw_text="",
+            is_ambiguous_success=ambiguous,
         ) from exc
     except requests.RequestException as exc:
         print(f"[redscript] network_error path={path} error={exc}")
@@ -114,7 +124,7 @@ def _request_once(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _post_with_retry(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     last_error: RedScriptApiError | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -125,6 +135,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
 
             is_network_like = (
                 exc.status_code is None
+                and not exc.is_ambiguous_success
                 and "Сбой сети при запросе к RedScript API" in str(exc)
             )
 
@@ -152,7 +163,7 @@ def check_token(access_token: str) -> dict[str, Any]:
     if not token:
         raise RedScriptApiError("Пустой API ключ")
 
-    return _post("/team/getMe", {"access_token": token})
+    return _post_with_retry("/team/getMe", {"access_token": token})
 
 
 def send_mail(
@@ -177,6 +188,7 @@ def send_mail(
 
     payload: dict[str, Any] = {
         "access_token": token,
+        "client_request_id": str(uuid4()),
         "email": (email or "").strip(),
         "mail_service": (mail_service or "").strip(),
         "country": (country or "").strip(),
@@ -199,4 +211,5 @@ def send_mail(
     if appid:
         payload["appid"] = appid.strip()
 
-    return _post("/team/sendMail", payload)
+    # Важно: для sendMail НЕ делаем retry, чтобы не плодить дубли писем.
+    return _request_once("/team/sendMail", payload)
