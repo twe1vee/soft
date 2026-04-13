@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -29,6 +30,21 @@ from olx.message_sender_submit import (
 )
 
 DEFAULT_SEND_MARKET = "olx_pt"
+
+CHAT_CONTEXT_ID_SELECTORS = [
+    '[data-testid="context-details-id"]',
+    '[data-cy="conversation-context-details-context-id"]',
+]
+
+CHAT_CONTEXT_TITLE_SELECTORS = [
+    '[data-testid="context-details-title"]',
+    '[data-cy="conversation-context-details-context-title"]',
+]
+
+CHAT_CONTEXT_PRICE_SELECTORS = [
+    '[data-testid="context-details-description"]',
+    '[data-cy="conversation-context-details-context-description"]',
+]
 
 
 def _elapsed_ms(start: float) -> int:
@@ -143,6 +159,52 @@ async def _read_effective_input_text(input_locator) -> str:
         return ""
 
 
+async def _read_first_visible_text(page, selectors: list[str]) -> str | None:
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count() == 0:
+                continue
+            if not await locator.is_visible():
+                continue
+            text = normalize_text(await locator.inner_text())
+            if text:
+                return text
+        except Exception:
+            continue
+    return None
+
+
+def _extract_numeric_ad_id(value: str | None) -> str | None:
+    text = normalize_text(value or "")
+    if not text:
+        return None
+
+    match = re.search(r"\bID\s*:\s*(\d+)\b", text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\b(\d{6,})\b", text)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+async def _read_chat_context_meta(page) -> dict:
+    context_id_text = await _read_first_visible_text(page, CHAT_CONTEXT_ID_SELECTORS)
+    context_title = await _read_first_visible_text(page, CHAT_CONTEXT_TITLE_SELECTORS)
+    context_price = await _read_first_visible_text(page, CHAT_CONTEXT_PRICE_SELECTORS)
+    ad_external_id = _extract_numeric_ad_id(context_id_text)
+
+    return {
+        "chat_context_id_text": context_id_text,
+        "chat_context_title": context_title,
+        "chat_context_price": context_price,
+        "ad_external_id": ad_external_id,
+    }
+
+
 async def send_message_to_ad(
     cookies_json: str,
     proxy_text: str,
@@ -157,6 +219,10 @@ async def send_message_to_ad(
 ) -> dict:
     result = base_result()
     result["ad_url"] = ad_url
+    result["ad_external_id"] = None
+    result["chat_context_id_text"] = None
+    result["chat_context_title"] = None
+    result["chat_context_price"] = None
     result["message_length"] = len(message_text or "")
     result["browser_engine"] = "gologin"
     result["gologin_profile_id"] = None
@@ -331,6 +397,10 @@ async def send_message_to_ad(
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
             await save_debug_artifacts(page, result, prefix="message_input_wrong_page")
             return result
+
+        meta_step = time.perf_counter()
+        result.update(await _read_chat_context_meta(page))
+        result["timings_ms"]["read_chat_context_meta"] = _elapsed_ms(meta_step)
 
         result["daily_limit_reached"] = await _has_daily_limit_banner(page, market_code=market_code)
 
@@ -535,10 +605,32 @@ async def send_message_to_ad(
             input_locator,
             message_text,
             market_code=market_code,
+            attachment_expected=bool(result.get("template_image_attached")),
+            max_rounds=12 if result.get("template_image_attached") else 10,
+            round_wait_ms=1000,
         )
         result["timings_ms"]["verify_message_sent"] = _elapsed_ms(t_step)
         result.update(verification)
         result["final_url"] = page.url
+
+        if verification.get("pending_message_detected"):
+            t_step = time.perf_counter()
+            pending_recheck = await verify_message_sent(
+                page,
+                input_locator,
+                message_text,
+                market_code=market_code,
+                attachment_expected=bool(result.get("template_image_attached")),
+                max_rounds=8,
+                round_wait_ms=1500,
+            )
+            result["timings_ms"]["verify_message_sent_pending_recheck"] = _elapsed_ms(t_step)
+
+            for key, value in pending_recheck.items():
+                result[key] = value
+
+            verification = pending_recheck
+            result["final_url"] = page.url
 
         t_step = time.perf_counter()
         result.update(await collect_chat_diagnostics(page))
@@ -582,6 +674,20 @@ async def send_message_to_ad(
             result["error"] = "OLX показал лимит на новые диалоги за день"
             result["timings_ms"]["total"] = _elapsed_ms(t_total)
             await save_debug_artifacts(page, result, prefix="daily_limit_reached")
+            return result
+
+        if (
+            result.get("template_image_attached")
+            and verification.get("post_send_input_empty")
+            and verification.get("post_send_chat_root_found")
+            and not verification.get("failed_message_detected")
+            and not verification.get("pending_message_detected")
+        ):
+            result["ok"] = True
+            result["status"] = "sent"
+            result["sent"] = True
+            result["timings_ms"]["total"] = _elapsed_ms(t_total)
+            await save_debug_artifacts(page, result, prefix="sent_success_attachment_fallback")
             return result
 
         result["status"] = "send_clicked_unverified"

@@ -62,6 +62,127 @@ def build_incoming_message_key(
     return f"incoming:{base}"
 
 
+def _extract_ad_id_from_text(value: str | None) -> str | None:
+    text = _norm(value)
+    if not text:
+        return None
+
+    patterns = [
+        r"\bID([A-Za-z0-9]{4,})\b",
+        r"\bID:\s*([0-9]{5,})\b",
+        r"\bID\s*([0-9]{5,})\b",
+        r"\b([0-9]{6,})\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            found = _norm(match.group(1))
+            if found:
+                return found
+
+    return None
+
+
+def _extract_ad_id_from_url(url: str | None) -> str | None:
+    text = _norm(url)
+    if not text:
+        return None
+
+    patterns = [
+        r"/ID([A-Za-z0-9]{4,})\.html",
+        r"\bID([A-Za-z0-9]{4,})\b",
+        r"[?&]ad_id=([A-Za-z0-9\-]+)",
+        r"/([0-9]{6,})(?:[/?#]|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            found = _norm(match.group(1))
+            if found:
+                return found
+
+    return None
+
+
+def _looks_like_ad_url(url: str | None) -> bool:
+    text = _norm(url).lower()
+    if not text:
+        return False
+
+    return (
+        "/d/anuncio/" in text
+        or "/d/oferta/" in text
+        or "/oferta/" in text
+        or "/anuncio/" in text
+        or "search_reason=" in text
+    )
+
+
+async def _extract_row_links(row) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    try:
+        links = row.locator("a[href]")
+        count = await _safe_count(links)
+
+        for i in range(min(count, 20)):
+            item = links.nth(i)
+            href = _norm(await _safe_attr(item, "href"))
+            if not href:
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            urls.append(href)
+    except Exception:
+        pass
+
+    return urls
+
+
+async def _extract_ad_fields_from_row(
+    row,
+    *,
+    title_text: str | None,
+    message_text: str | None,
+) -> tuple[str | None, str | None]:
+    ad_url = None
+    ad_external_id = None
+
+    urls = await _extract_row_links(row)
+
+    for href in urls:
+        if _looks_like_ad_url(href):
+            ad_url = href
+            ad_external_id = _extract_ad_id_from_url(href) or ad_external_id
+            break
+
+    if not ad_external_id:
+        for href in urls:
+            ad_external_id = _extract_ad_id_from_url(href)
+            if ad_external_id:
+                break
+
+    if not ad_external_id:
+        ad_external_id = (
+            _extract_ad_id_from_text(title_text)
+            or _extract_ad_id_from_text(message_text)
+        )
+
+    try:
+        row_text = await _safe_inner_text(row, timeout_ms=1200)
+    except Exception:
+        row_text = ""
+
+    if not ad_external_id:
+        ad_external_id = _extract_ad_id_from_text(row_text)
+
+    return ad_url, ad_external_id
+
+
 async def _pick_rows(page):
     best_locator = None
     best_selector = None
@@ -229,6 +350,12 @@ async def _parse_single_row(
         print(f"[dialogs_parser] row_skip empty conversation_id={conversation_id}")
         return None
 
+    ad_url, ad_external_id = await _extract_ad_fields_from_row(
+        row,
+        title_text=ad_title,
+        message_text=last_message_text,
+    )
+
     is_outgoing = await _is_outgoing_by_icon(row)
     is_unread = await _is_unread_by_section(row)
 
@@ -247,8 +374,8 @@ async def _parse_single_row(
         "conversation_url": conversation_url,
         "seller_name": seller_name or None,
         "ad_title": ad_title or None,
-        "ad_url": None,
-        "ad_external_id": None,
+        "ad_url": ad_url,
+        "ad_external_id": ad_external_id,
         "last_message_text": last_message_text or None,
         "updated_hint": updated_hint or None,
         "is_unread": is_unread,
@@ -261,14 +388,14 @@ async def parse_dialogs_page(
     page,
     *,
     market_code: str = DEFAULT_DIALOGS_MARKET,
-) -> list[dict[str, Any]]:
+) -> list[dict]:
     locator, selector, count = await _pick_rows(page)
 
     if locator is None or count <= 0:
         print("[dialogs_parser] rows_found=0")
         return []
 
-    parsed: list[dict[str, Any]] = []
+    parsed: list[dict] = []
     seen_keys: set[str] = set()
 
     for i in range(count):
@@ -296,6 +423,8 @@ async def parse_dialogs_page(
             f"key={item['conversation_key']} "
             f"seller={item.get('seller_name')} "
             f"title={item.get('ad_title')} "
+            f"ad_url={item.get('ad_url')} "
+            f"ad_external_id={item.get('ad_external_id')} "
             f"msg={item.get('last_message_text')} "
             f"time={item.get('updated_hint')} "
             f"is_unread={item.get('is_unread')} "

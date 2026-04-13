@@ -50,6 +50,16 @@ def _is_incoming_candidate(item: dict[str, Any]) -> bool:
     return is_unread
 
 
+def _pick_best_value(*values):
+    for value in values:
+        if isinstance(value, str):
+            if value.strip():
+                return value
+        elif value is not None:
+            return value
+    return None
+
+
 async def check_account_dialogs(
     *,
     user_id: int,
@@ -267,6 +277,8 @@ async def check_account_dialogs(
                     f"conversation_key={conversation_key!r} "
                     f"seller={item.get('seller_name')!r} "
                     f"title={item.get('ad_title')!r} "
+                    f"ad_url={item.get('ad_url')!r} "
+                    f"ad_external_id={item.get('ad_external_id')!r} "
                     f"text={item.get('last_message_text')!r} "
                     f"updated_hint={item.get('updated_hint')!r} "
                     f"direction={item.get('last_message_direction_guess')!r} "
@@ -296,11 +308,18 @@ async def check_account_dialogs(
                         f"conversation_key={conversation_key!r} market={market_code}"
                     )
 
-                resolved_ad_url = item.get("ad_url") or (existing_conversation or {}).get("ad_url")
-                resolved_ad_external_id = item.get("ad_external_id") or (
-                    existing_conversation or {}
-                ).get("ad_external_id")
-                resolved_ad_title = item.get("ad_title") or (existing_conversation or {}).get("ad_title")
+                resolved_ad_url = _pick_best_value(
+                    item.get("ad_url"),
+                    (existing_conversation or {}).get("ad_url"),
+                )
+                resolved_ad_external_id = _pick_best_value(
+                    item.get("ad_external_id"),
+                    (existing_conversation or {}).get("ad_external_id"),
+                )
+                resolved_ad_title = _pick_best_value(
+                    item.get("ad_title"),
+                    (existing_conversation or {}).get("ad_title"),
+                )
                 resolved_ad_db_id = (existing_conversation or {}).get("ad_id")
 
                 matched_ad = None
@@ -320,9 +339,18 @@ async def check_account_dialogs(
                     )
 
                 if matched_ad:
-                    resolved_ad_url = resolved_ad_url or matched_ad.get("url")
-                    resolved_ad_external_id = resolved_ad_external_id or matched_ad.get("ad_id")
-                    resolved_ad_title = resolved_ad_title or matched_ad.get("title")
+                    resolved_ad_url = _pick_best_value(
+                        resolved_ad_url,
+                        matched_ad.get("url"),
+                    )
+                    resolved_ad_external_id = _pick_best_value(
+                        resolved_ad_external_id,
+                        matched_ad.get("ad_id"),
+                    )
+                    resolved_ad_title = _pick_best_value(
+                        resolved_ad_title,
+                        matched_ad.get("title"),
+                    )
                     resolved_ad_db_id = resolved_ad_db_id or matched_ad.get("id")
 
                 conversation_id = create_or_update_conversation(

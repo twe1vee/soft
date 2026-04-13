@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from typing import Any
 from urllib.parse import urlparse
-from olx.markets import get_market_policy
 
 import requests
 from gologin import GoLogin
@@ -12,13 +11,14 @@ from db.accounts import (
     clear_account_gologin_profile,
     delete_account,
     get_account_by_id,
+    get_expired_write_blocked_accounts_with_profiles,
     get_stale_accounts_with_profiles,
     touch_account_last_used,
     update_account_browser_engine,
     update_account_gologin_profile,
-    get_expired_write_blocked_accounts_with_profiles,
 )
 from olx.cookies import normalize_cookies
+from olx.markets import get_market_policy
 from olx.runtime_rate_limit import (
     wait_gologin_create_slot_sync,
     wait_gologin_delete_slot_sync,
@@ -31,6 +31,7 @@ class AccountRuntimeBlockedError(RuntimeError):
 
 GOLOGIN_API_BASE = "https://api.gologin.com"
 GOLOGIN_PROFILE_IDLE_DELETE_SECONDS = 30 * 60
+WRITE_BLOCKED_DELETE_SECONDS = 30 * 60
 
 
 def get_gologin_token() -> str:
@@ -122,11 +123,11 @@ def cookies_to_gologin(cookies_json: str) -> list[dict[str, Any]]:
     return result
 
 
-def _default_proxy_mode() -> str:
-    raw = (os.getenv("GOLOGIN_PROXY_MODE") or "http").strip().lower()
-    if raw in {"http", "socks4", "socks5"}:
-        return raw
-    return "http"
+def _require_socks5_mode(mode: str) -> str:
+    normalized = (mode or "").strip().lower()
+    if normalized != "socks5":
+        raise ValueError("Поддерживается только SOCKS5 прокси")
+    return normalized
 
 
 def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
@@ -136,11 +137,7 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
 
     if "://" in raw:
         parsed = urlparse(raw)
-        mode = (parsed.scheme or _default_proxy_mode()).lower()
-        if mode == "https":
-            mode = "http"
-        if mode not in {"http", "socks4", "socks5"}:
-            raise ValueError(f"Неподдерживаемый тип прокси для GoLogin: {mode}")
+        mode = _require_socks5_mode(parsed.scheme)
 
         host = parsed.hostname
         port = parsed.port
@@ -163,10 +160,14 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
     parts = raw.split(":")
     if len(parts) == 2:
         host, port = parts
+        host = host.strip()
+        port = port.strip()
+        if not host or not port:
+            raise ValueError("proxy_text имеет неверный формат")
         return {
-            "mode": _default_proxy_mode(),
-            "host": host.strip(),
-            "port": int(port.strip()),
+            "mode": "socks5",
+            "host": host,
+            "port": int(port),
         }
 
     if len(parts) >= 4:
@@ -174,8 +175,10 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
         port = int(parts[1].strip())
         username = parts[2].strip()
         password = ":".join(parts[3:]).strip()
+        if not host or not username or not password:
+            raise ValueError("proxy_text имеет неверный формат")
         return {
-            "mode": _default_proxy_mode(),
+            "mode": "socks5",
             "host": host,
             "port": port,
             "username": username,
@@ -184,7 +187,7 @@ def parse_proxy_text(proxy_text: str) -> dict[str, Any]:
 
     raise ValueError(
         "proxy_text должен быть в формате "
-        "'http://user:pass@host:port', 'socks5://user:pass@host:port', "
+        "'socks5://user:pass@host:port', 'socks5://host:port', "
         "'host:port' или 'host:port:user:pass'"
     )
 
@@ -467,7 +470,6 @@ def cleanup_stale_gologin_profiles(
         "deleted": deleted,
         "failed": failed,
     }
-WRITE_BLOCKED_DELETE_SECONDS = 30 * 60
 
 
 def cleanup_expired_write_blocked_accounts(

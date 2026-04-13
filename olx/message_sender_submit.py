@@ -704,6 +704,7 @@ async def detect_pending_message_state(
                 if not await item.is_visible():
                     continue
 
+                    # unreachable
                 label_text = normalize_text(await item.inner_text())
                 label_text_lower = label_text.lower()
 
@@ -713,6 +714,18 @@ async def detect_pending_message_state(
                     return data
             except Exception:
                 continue
+    except Exception:
+        pass
+
+    try:
+        body_text = await page_body_text(page)
+        body_text_lower = (body_text or "").lower()
+
+        for hint in pending_hints:
+            if hint.lower() in body_text_lower:
+                data["pending_message_detected"] = True
+                data["pending_message_reason"] = hint
+                return data
     except Exception:
         pass
 
@@ -743,6 +756,9 @@ async def verify_message_sent(
     message_text: str,
     *,
     market_code: str = DEFAULT_MESSAGE_MARKET,
+    attachment_expected: bool = False,
+    max_rounds: int = 10,
+    round_wait_ms: int = 1000,
 ) -> dict[str, Any]:
     target_text = normalize_text(message_text)
 
@@ -763,10 +779,13 @@ async def verify_message_sent(
         "pending_message_detected": False,
         "pending_message_reason": None,
         "market_code": market_code,
+        "attachment_expected": attachment_expected,
+        "verification_rounds_used": 0,
     }
 
-    for _ in range(10):
-        await page.wait_for_timeout(1000)
+    for round_index in range(max_rounds):
+        verification["verification_rounds_used"] = round_index + 1
+        await page.wait_for_timeout(round_wait_ms)
 
         try:
             verification["post_send_url"] = page.url
@@ -896,6 +915,17 @@ async def verify_message_sent(
             and verification["post_send_input_empty"]
             and not verification["failed_message_detected"]
             and not verification["pending_message_detected"]
+        ):
+            verification["delivery_verified"] = True
+            return verification
+
+        if (
+            attachment_expected
+            and verification["post_send_input_empty"]
+            and verification["post_send_chat_root_found"]
+            and not verification["failed_message_detected"]
+            and not verification["pending_message_detected"]
+            and round_index >= 2
         ):
             verification["delivery_verified"] = True
             return verification

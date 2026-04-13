@@ -30,7 +30,6 @@ def proxy_short(proxy_text: str, max_len: int = 45) -> str:
 
     parts = [p.strip() for p in value.split(":")]
 
-    # host:port:user:pass -> host:port
     if len(parts) >= 2:
         host = parts[0]
         port = parts[1]
@@ -58,7 +57,7 @@ def humanize_proxy_status(status: str | None) -> str:
     if value in {"proxy_failed"}:
         return "ошибка прокси"
 
-    if value in {"failed", "dead"}:
+    if value in {"failed", "dead", "invalid_type"}:
         return "ошибка проверки"
 
     return "не проверен"
@@ -74,6 +73,7 @@ def normalize_proxy_status_for_db(raw_status: str | None) -> str:
         "cloudfront_blocked",
         "proxy_failed",
         "failed",
+        "invalid_type",
     }
 
     if value in allowed_statuses:
@@ -128,6 +128,80 @@ def build_proxy_delete_confirm_keyboard(proxy_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ Да, удалить", callback_data=f"proxy:confirm_delete:{proxy_id}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"proxy:open:{proxy_id}")],
     ])
+
+
+def _is_valid_socks5_proxy(proxy_text: str) -> bool:
+    raw = (proxy_text or "").strip()
+    if not raw:
+        return False
+
+    lower = raw.lower()
+
+    if "://" in lower:
+        return lower.startswith("socks5://")
+
+    parts = [p.strip() for p in raw.split(":")]
+    if len(parts) == 2:
+        return True
+    if len(parts) >= 4:
+        return True
+
+    return False
+
+
+def _normalize_single_proxy(proxy_text: str) -> str | None:
+    raw = (proxy_text or "").strip()
+    if not raw:
+        return None
+
+    lower = raw.lower()
+
+    if "://" in lower:
+        if not lower.startswith("socks5://"):
+            return None
+        return raw
+
+    parts = [p.strip() for p in raw.split(":")]
+    if len(parts) == 2:
+        host, port = parts
+        if not host or not port:
+            return None
+        return f"socks5://{host}:{port}"
+
+    if len(parts) >= 4:
+        host = parts[0]
+        port = parts[1]
+        username = parts[2]
+        password = ":".join(parts[3:])
+        if not host or not port or not username or not password:
+            return None
+        return f"socks5://{username}:{password}@{host}:{port}"
+
+    return None
+
+
+def _parse_proxy_lines(text: str) -> tuple[list[str], list[str]]:
+    valid: list[str] = []
+    invalid: list[str] = []
+    seen = set()
+
+    for line in (text or "").splitlines():
+        value = line.strip()
+        if not value:
+            continue
+
+        normalized = _normalize_single_proxy(value)
+        if not normalized:
+            invalid.append(value)
+            continue
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        valid.append(normalized)
+
+    return valid, invalid
 
 
 async def show_proxies_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,11 +269,12 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
             "Пришли список прокси:\n"
             "1. текстом — каждый с новой строки\n"
             "2. .txt файлом\n\n"
-            "Поддерживаются форматы:\n"
+            "Разрешён только SOCKS5:\n"
+            "- socks5://user:pass@host:port\n"
+            "- socks5://host:port\n"
             "- host:port\n"
-            "- host:port:user:pass\n"
-            "- http://user:pass@host:port\n"
-            "- socks5://user:pass@host:port",
+            "- host:port:user:pass\n\n"
+            "HTTP / HTTPS / SOCKS4 не принимаются.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад к прокси", callback_data="menu:proxies")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
@@ -227,14 +302,30 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
+        proxy_text = proxy.get("proxy_text", "")
+
+        if not _is_valid_socks5_proxy(proxy_text):
+            update_proxy_last_check(user_id, proxy_id)
+            update_proxy_status(user_id, proxy_id, "invalid_type")
+
+            await safe_edit_message_text(
+                query,
+                "🔎 Проверка прокси завершена\n\n"
+                f"Прокси: {proxy_short(proxy_text, max_len=70)}\n"
+                "Статус: ошибка проверки\n\n"
+                "Причина: поддерживается только SOCKS5.",
+                reply_markup=build_proxy_card_keyboard(proxy_id),
+            )
+            return
+
         await safe_edit_message_text(
             query,
             "⏳ Проверяю прокси...\n\n"
-            f"Прокси: {proxy_short(proxy.get('proxy_text', ''), max_len=50)}"
+            f"Прокси: {proxy_short(proxy_text, max_len=50)}"
         )
 
         result = await check_proxy_alive(
-            proxy_text=proxy["proxy_text"],
+            proxy_text=proxy_text,
             headless=True,
         )
 
@@ -252,7 +343,9 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if raw_error:
             lower_error = raw_error.lower()
 
-            if "timeout" in lower_error:
+            if "only socks5" in lower_error or "поддерживается только socks5" in lower_error:
+                human_error = "Поддерживается только SOCKS5."
+            elif "timeout" in lower_error:
                 human_error = "Прокси не ответил вовремя."
             elif "407" in lower_error or "proxy authentication" in lower_error or "auth" in lower_error:
                 human_error = "Неверный логин или пароль прокси."
@@ -335,39 +428,31 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
 
-def _parse_proxy_lines(text: str) -> list[str]:
-    result = []
-    seen = set()
-
-    for line in (text or "").splitlines():
-        value = line.strip()
-        if not value:
-            continue
-        if value in seen:
-            continue
-        seen.add(value)
-        result.append(value)
-
-    return result
-
-
 async def handle_proxies_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     current_user = get_current_user(update)
     user_id = current_user["id"]
 
-    proxy_list = _parse_proxy_lines(text)
+    proxy_list, invalid_list = _parse_proxy_lines(text)
     if not proxy_list:
         await update.message.reply_text(
-            "❌ Не удалось найти ни одного прокси в сообщении."
+            "❌ Не удалось найти ни одного подходящего прокси.\n\n"
+            "Разрешён только SOCKS5."
         )
         return
 
     inserted_count = create_proxies_bulk(user_id, proxy_list)
     context.user_data.clear()
 
-    await update.message.reply_text(
-        f"✅ Добавлено прокси: {inserted_count}"
-    )
+    reply = f"✅ Добавлено прокси: {inserted_count}"
+    if invalid_list:
+        preview = "\n".join(invalid_list[:5])
+        reply += (
+            "\n\n⚠️ Пропущены строки с неподдерживаемым типом.\n"
+            "Разрешён только SOCKS5.\n\n"
+            f"{preview}"
+        )
+
+    await update.message.reply_text(reply)
 
 
 async def handle_proxies_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -387,14 +472,24 @@ async def handle_proxies_document(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("❌ Файл должен быть в UTF-8.")
         return
 
-    proxy_list = _parse_proxy_lines(text)
+    proxy_list, invalid_list = _parse_proxy_lines(text)
     if not proxy_list:
-        await update.message.reply_text("❌ Не удалось найти прокси в файле.")
+        await update.message.reply_text(
+            "❌ Не удалось найти ни одного подходящего прокси в файле.\n\n"
+            "Разрешён только SOCKS5."
+        )
         return
 
     inserted_count = create_proxies_bulk(user_id, proxy_list)
     context.user_data.clear()
 
-    await update.message.reply_text(
-        f"✅ Добавлено прокси: {inserted_count}"
-    )
+    reply = f"✅ Добавлено прокси: {inserted_count}"
+    if invalid_list:
+        preview = "\n".join(invalid_list[:5])
+        reply += (
+            "\n\n⚠️ Пропущены строки с неподдерживаемым типом.\n"
+            "Разрешён только SOCKS5.\n\n"
+            f"{preview}"
+        )
+
+    await update.message.reply_text(reply)
