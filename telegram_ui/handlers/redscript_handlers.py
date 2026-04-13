@@ -188,7 +188,7 @@ async def handle_redscript_callback(update: Update, context: ContextTypes.DEFAUL
     prompts = {
         "redscript:set_initials": ("awaiting_redscript_initials", "Пришли имя / инициалы отправителя."),
         "redscript:set_address": ("awaiting_redscript_address", "Пришли адрес отправителя."),
-        "redscript:set_mail_service": ("awaiting_redscript_mail_service", "Пришли провайдера, например: hype или just."),
+        "redscript:set_mail_service": ("awaiting_redscript_mail_service", "Пришли mail_service как есть. Например: Polya или polya."),
         "redscript:set_country": ("awaiting_redscript_country", "Пришли страну, например: Румыния."),
         "redscript:set_type": ("awaiting_redscript_type", "Пришли тип объявления, например: services."),
         "redscript:set_service": ("awaiting_redscript_service", "Пришли сервис, например: OLX."),
@@ -372,6 +372,21 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         )
         return
 
+    debug_payload = {
+        "email": payload.get("email") or "",
+        "mail_service": settings["mail_service"] or DEFAULT_MAIL_SERVICE,
+        "country": settings["country"] or DEFAULT_COUNTRY,
+        "type": settings["type"] or DEFAULT_TYPE,
+        "service": settings["service"] or DEFAULT_SERVICE,
+        "version": settings["version"] or DEFAULT_VERSION,
+        "name": safe_name,
+        "amount": payload.get("amount") or "",
+        "image": (payload.get("image") or "").strip() or None,
+        "initials": settings["initials"] or None,
+        "address": settings["address"] or None,
+    }
+    print(f"[redscript_handler] send_mail payload={debug_payload}")
+
     try:
         result = send_mail(
             token,
@@ -391,8 +406,12 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         _clear_redscript_flow(context)
         context.user_data.pop("redscript_send_payload", None)
 
+        full_error = str(exc)
+        if getattr(exc, "raw_text", ""):
+            full_error += f"\n\nRAW: {exc.raw_text[:3000]}"
+
         await update.message.reply_text(
-            f"Ошибка отправки письма:\n{exc}",
+            f"Ошибка отправки письма:\n{full_error}",
             reply_markup=build_back_to_menu_keyboard(),
         )
         return

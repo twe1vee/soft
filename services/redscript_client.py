@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import requests
@@ -9,15 +10,30 @@ DEFAULT_TIMEOUT_SECONDS = 8
 
 
 class RedScriptApiError(Exception):
-    def __init__(self, message: str, *, status_code: int | None = None, payload: dict | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        payload: dict | None = None,
+        raw_text: str | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
+        self.raw_text = raw_text or ""
+
+
+def _debug_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in payload.items() if k != "access_token"}
 
 
 def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{BASE_URL}{path}"
     headers = {"Content-Type": "application/json; charset=UTF-8"}
+
+    debug_payload = _debug_payload(payload)
+    print(f"[redscript] POST {path} payload={json.dumps(debug_payload, ensure_ascii=False)}")
 
     try:
         response = requests.post(
@@ -27,15 +43,19 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
+        print(f"[redscript] network_error path={path} error={exc}")
         raise RedScriptApiError(f"Сбой сети при запросе к RedScript API: {exc}") from exc
+
+    raw_text = (response.text or "").strip()
+    print(f"[redscript] RESPONSE {path} status={response.status_code} body={raw_text[:4000]}")
 
     try:
         data = response.json()
     except Exception:
-        text = (response.text or "").strip()
         raise RedScriptApiError(
-            f"RedScript API вернул неожиданный ответ: HTTP {response.status_code} {text[:300]}",
+            f"RedScript API вернул неожиданный ответ: HTTP {response.status_code} {raw_text[:300]}",
             status_code=response.status_code,
+            raw_text=raw_text,
         )
 
     if response.status_code == 429:
@@ -43,6 +63,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             "Превышен лимит запросов RedScript API. Попробуйте чуть позже.",
             status_code=response.status_code,
             payload=data,
+            raw_text=raw_text,
         )
 
     if response.status_code == 424:
@@ -53,6 +74,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             f"Почтовый провайдер RedScript не смог обработать запрос: {detail or 'HTTP 424'}",
             status_code=response.status_code,
             payload=data,
+            raw_text=raw_text,
         )
 
     if response.status_code >= 400:
@@ -63,6 +85,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             f"Ошибка RedScript API: {err or f'HTTP {response.status_code}'}",
             status_code=response.status_code,
             payload=data,
+            raw_text=raw_text,
         )
 
     if data.get("status") is False:
@@ -73,6 +96,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             f"RedScript API вернул ошибку: {err or 'неизвестная ошибка'}",
             status_code=response.status_code,
             payload=data,
+            raw_text=raw_text,
         )
 
     return data
