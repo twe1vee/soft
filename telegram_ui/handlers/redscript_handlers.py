@@ -12,7 +12,7 @@ from db import (
 )
 from olx.ad_page_parser import parse_ad_page
 from services.redscript_client import RedScriptApiError, check_token, send_mail
-from telegram_ui.menu import build_back_to_menu_keyboard
+
 
 DEFAULT_COUNTRY = "Португалия"
 DEFAULT_TYPE = "services"
@@ -292,7 +292,7 @@ async def handle_redscript_callback(update: Update, context: ContextTypes.DEFAUL
             return
 
         try:
-            check_token(token)
+            await check_token(token)
         except RedScriptApiError as exc:
             await query.edit_message_text(
                 f"Ошибка проверки API:\n{exc}",
@@ -430,11 +430,10 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
         token = text.strip()
 
         try:
-            check_token(token)
+            await check_token(token)
         except RedScriptApiError as exc:
             await update.message.reply_text(
-                f"Ошибка проверки API:\n{exc}",
-                reply_markup=build_back_to_menu_keyboard(),
+                f"Ошибка проверки API:\n{exc}"
             )
             return
 
@@ -470,8 +469,7 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
 
         if not parse_result.get("ok"):
             await update.message.reply_text(
-                f"Ошибка парсинга объявления:\n{parse_result.get('error') or parse_result.get('status')}",
-                reply_markup=build_back_to_menu_keyboard(),
+                f"Ошибка парсинга объявления:\n{parse_result.get('error') or parse_result.get('status')}"
             )
             return
 
@@ -515,10 +513,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
 
     token = settings["access_token"]
     if not token:
-        await update.message.reply_text(
-            "Сначала подключи API ключ.",
-            reply_markup=build_back_to_menu_keyboard(),
-        )
+        await update.message.reply_text("Сначала подключи API ключ.")
         return
 
     missing_fields = []
@@ -531,8 +526,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         _clear_redscript_flow(context)
         context.user_data.pop("redscript_send_payload", None)
         await update.message.reply_text(
-            "Сначала заполни данные покупателя:\n- " + "\n- ".join(missing_fields),
-            reply_markup=build_back_to_menu_keyboard(),
+            "Сначала заполни данные покупателя:\n- " + "\n- ".join(missing_fields)
         )
         return
 
@@ -541,8 +535,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         _clear_redscript_flow(context)
         context.user_data.pop("redscript_send_payload", None)
         await update.message.reply_text(
-            "Не удалось подготовить название объявления для отправки.",
-            reply_markup=build_back_to_menu_keyboard(),
+            "Не удалось подготовить название объявления для отправки."
         )
         return
 
@@ -565,7 +558,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
     print(f"[redscript_handler] send_mail payload={debug_payload}")
 
     try:
-        result = send_mail(
+        result = await send_mail(
             token,
             email=payload.get("email") or "",
             mail_service=settings["mail_service"] or DEFAULT_MAIL_SERVICE,
@@ -587,8 +580,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
             await update.message.reply_text(
                 "⏳ Отправка не подтверждена\n\n"
                 "Сообщение, вероятно, уже отправлено, но сервис не успел вернуть итоговый ответ.\n\n"
-                "Не отправляйте повторно сразу.",
-                reply_markup=build_back_to_menu_keyboard(),
+                "Не отправляйте повторно сразу."
             )
             return
 
@@ -597,15 +589,11 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
             full_error += f"\n\nRAW: {exc.raw_text[:3000]}"
 
         await update.message.reply_text(
-            f"Ошибка отправки письма:\n{full_error}",
-            reply_markup=build_back_to_menu_keyboard(),
+            f"Ошибка отправки письма:\n{full_error}"
         )
         return
 
     _clear_redscript_flow(context)
     context.user_data.pop("redscript_send_payload", None)
 
-    await update.message.reply_text(
-        "✅ Письмо отправлено.",
-        reply_markup=build_back_to_menu_keyboard(),
-    )
+    await update.message.reply_text("✅ Письмо отправлено.")

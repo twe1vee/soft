@@ -107,53 +107,32 @@ async def _assert_browser_alive(browser, context, page) -> None:
         raise RuntimeError(f"Профиль остановился во время проверки: {exc}") from exc
 
 
-async def _open_olx_with_retry(page, attempts: int = 2) -> tuple[str | None, str | None, str | None]:
-    last_error: str | None = None
-    last_title: str | None = None
-    last_body: str | None = None
+async def _open_olx_once(page) -> tuple[str | None, str | None, str | None]:
+    await page.goto(
+        PT_HOME_URL,
+        wait_until="domcontentloaded",
+        timeout=25000,
+    )
+    await page.wait_for_timeout(1500)
 
-    for attempt in range(1, attempts + 1):
-        try:
-            await page.goto(
-                PT_HOME_URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-            await page.wait_for_timeout(4000)
+    try:
+        await dismiss_cookie_banner_if_present(page)
+    except Exception:
+        pass
 
-            try:
-                await dismiss_cookie_banner_if_present(page)
-            except Exception:
-                pass
+    await page.wait_for_timeout(700)
 
-            await page.wait_for_timeout(1500)
+    try:
+        page_title = await page.title()
+    except Exception:
+        page_title = None
 
-            try:
-                last_title = await page.title()
-            except Exception:
-                last_title = None
+    try:
+        body_text = await page.locator("body").inner_text(timeout=4000)
+    except Exception:
+        body_text = ""
 
-            try:
-                last_body = await page.locator("body").inner_text(timeout=7000)
-            except Exception:
-                last_body = ""
-
-            return page.url, last_title, last_body
-
-        except PlaywrightTimeoutError as exc:
-            last_error = str(exc)
-        except Exception as exc:
-            last_error = str(exc)
-
-        if attempt < attempts:
-            try:
-                await page.wait_for_timeout(3000)
-                await page.goto("about:blank", timeout=10000)
-                await page.wait_for_timeout(1000)
-            except Exception:
-                pass
-
-    raise RuntimeError(last_error or "Не удалось открыть OLX через прокси")
+    return page.url, page_title, body_text
 
 
 async def check_proxy_alive(
@@ -220,8 +199,8 @@ async def check_proxy_alive(
 
         await _assert_browser_alive(browser, context, page)
 
-        result["attempts_used"] = 2
-        final_url, page_title, body_text = await _open_olx_with_retry(page, attempts=2)
+        result["attempts_used"] = 1
+        final_url, page_title, body_text = await _open_olx_once(page)
 
         await _assert_browser_alive(browser, context, page)
 
@@ -239,20 +218,21 @@ async def check_proxy_alive(
             result["error"] = "OLX не открылся через прокси"
             return result
 
-        # Если сайт открылся, но контента мало — не считаем сразу мёртвым.
         if result["body_length"] <= 50:
             result["status"] = "unstable"
             result["error"] = "OLX открылся, но контент страницы подтвердился слабо"
             return result
-
-        await page.wait_for_timeout(2000)
-        await _assert_browser_alive(browser, context, page)
 
         result["ok"] = True
         result["status"] = "working"
         result["error"] = None
         return result
 
+    except PlaywrightTimeoutError as exc:
+        status, human_error = _classify_proxy_error(str(exc))
+        result["status"] = status
+        result["error"] = human_error
+        return result
     except Exception as exc:
         status, human_error = _classify_proxy_error(str(exc))
         result["status"] = status
