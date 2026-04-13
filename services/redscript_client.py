@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import requests
 
 BASE_URL = "https://api.redscript.info"
 DEFAULT_TIMEOUT_SECONDS = 20
+MAX_RETRIES = 3
+BASE_BACKOFF_SECONDS = 1.0
 
 
 class RedScriptApiError(Exception):
@@ -28,7 +31,7 @@ def _debug_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k != "access_token"}
 
 
-def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _request_once(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{BASE_URL}{path}"
     headers = {"Content-Type": "application/json; charset=UTF-8"}
 
@@ -42,9 +45,18 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             headers=headers,
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
+    except requests.Timeout as exc:
+        print(f"[redscript] timeout path={path} error={exc}")
+        raise RedScriptApiError(
+            f"Сбой сети при запросе к RedScript API: {exc}",
+            raw_text="",
+        ) from exc
     except requests.RequestException as exc:
         print(f"[redscript] network_error path={path} error={exc}")
-        raise RedScriptApiError(f"Сбой сети при запросе к RedScript API: {exc}") from exc
+        raise RedScriptApiError(
+            f"Сбой сети при запросе к RedScript API: {exc}",
+            raw_text="",
+        ) from exc
 
     raw_text = (response.text or "").strip()
     print(f"[redscript] RESPONSE {path} status={response.status_code} body={raw_text[:4000]}")
@@ -100,6 +112,39 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     return data
+
+
+def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    last_error: RedScriptApiError | None = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return _request_once(path, payload)
+        except RedScriptApiError as exc:
+            last_error = exc
+
+            is_network_like = (
+                exc.status_code is None
+                and "Сбой сети при запросе к RedScript API" in str(exc)
+            )
+
+            if not is_network_like:
+                raise
+
+            if attempt >= MAX_RETRIES:
+                raise
+
+            delay = BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            print(
+                f"[redscript] retry path={path} "
+                f"attempt={attempt}/{MAX_RETRIES} sleep={delay:.1f}s"
+            )
+            time.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+
+    raise RedScriptApiError("Неизвестная ошибка RedScript API")
 
 
 def check_token(access_token: str) -> dict[str, Any]:
