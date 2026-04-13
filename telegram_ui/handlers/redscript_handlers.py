@@ -332,6 +332,22 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         )
         return
 
+    missing_fields = []
+    if not settings["initials"]:
+        missing_fields.append("имя / инициалы")
+    if not settings["address"]:
+        missing_fields.append("адрес")
+
+    if missing_fields:
+        _clear_redscript_flow(context)
+        context.user_data.pop("redscript_send_payload", None)
+
+        await update.message.reply_text(
+            "Сначала заполни настройки отправителя:\n- " + "\n- ".join(missing_fields),
+            reply_markup=build_back_to_menu_keyboard(),
+        )
+        return
+
     try:
         result = send_mail(
             token,

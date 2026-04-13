@@ -170,31 +170,51 @@ def update_user_redscript_defaults(
     service: str | None = None,
     version: str | None = None,
 ) -> bool:
+    updates: list[str] = []
+    values: list[object] = []
+
+    if initials is not None:
+        updates.append("redscript_initials = ?")
+        values.append((initials or "").strip() or None)
+
+    if address is not None:
+        updates.append("redscript_address = ?")
+        values.append((address or "").strip() or None)
+
+    if mail_service is not None:
+        updates.append("redscript_mail_service = ?")
+        values.append((mail_service or "").strip() or None)
+
+    if country is not None:
+        updates.append("redscript_country = ?")
+        values.append((country or "").strip() or None)
+
+    if type_value is not None:
+        updates.append("redscript_type = ?")
+        values.append((type_value or "").strip() or None)
+
+    if service is not None:
+        updates.append("redscript_service = ?")
+        values.append((service or "").strip() or None)
+
+    if version is not None:
+        updates.append("redscript_version = ?")
+        values.append((version or "").strip() or None)
+
+    if not updates:
+        return False
+
+    values.append(int(user_id))
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """
+        f"""
         UPDATE users
-        SET
-            redscript_initials = ?,
-            redscript_address = ?,
-            redscript_mail_service = ?,
-            redscript_country = ?,
-            redscript_type = ?,
-            redscript_service = ?,
-            redscript_version = ?
+        SET {", ".join(updates)}
         WHERE id = ?
         """,
-        (
-            (initials or "").strip() or None,
-            (address or "").strip() or None,
-            (mail_service or "").strip() or None,
-            (country or "").strip() or None,
-            (type_value or "").strip() or None,
-            (service or "").strip() or None,
-            (version or "").strip() or None,
-            int(user_id),
-        ),
+        tuple(values),
     )
     conn.commit()
     changed = cursor.rowcount > 0
