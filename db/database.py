@@ -4,8 +4,11 @@ DB_FILE = "olx_assistant.db"
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=15.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -197,28 +200,20 @@ def init_db():
 
     if not _column_exists(cursor, "users", "last_active_at"):
         cursor.execute("ALTER TABLE users ADD COLUMN last_active_at INTEGER")
-
     if not _column_exists(cursor, "users", "redscript_access_token"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_access_token TEXT")
-
     if not _column_exists(cursor, "users", "redscript_initials"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_initials TEXT")
-
     if not _column_exists(cursor, "users", "redscript_address"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_address TEXT")
-
     if not _column_exists(cursor, "users", "redscript_mail_service"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_mail_service TEXT")
-
     if not _column_exists(cursor, "users", "redscript_country"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_country TEXT")
-
     if not _column_exists(cursor, "users", "redscript_type"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_type TEXT")
-
     if not _column_exists(cursor, "users", "redscript_service"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_service TEXT")
-
     if not _column_exists(cursor, "users", "redscript_version"):
         cursor.execute("ALTER TABLE users ADD COLUMN redscript_version TEXT")
 
@@ -227,43 +222,33 @@ def init_db():
 
     if not _column_exists(cursor, "accounts", "proxy_id"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN proxy_id INTEGER")
-
     if not _column_exists(cursor, "accounts", "created_at"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
     if not _column_exists(cursor, "accounts", "updated_at"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
     if not _column_exists(cursor, "accounts", "browser_engine"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN browser_engine TEXT NOT NULL DEFAULT 'gologin'")
-
     if not _column_exists(cursor, "accounts", "gologin_profile_id"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_id TEXT")
-
     if not _column_exists(cursor, "accounts", "gologin_profile_name"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN gologin_profile_name TEXT")
-
     if not _column_exists(cursor, "accounts", "market"):
         cursor.execute("ALTER TABLE accounts ADD COLUMN market TEXT NOT NULL DEFAULT 'olx_pt'")
 
     if not _column_exists(cursor, "proxies", "created_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-
     if not _column_exists(cursor, "proxies", "updated_at"):
         cursor.execute("ALTER TABLE proxies ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     if not _column_exists(cursor, "conversations", "ad_external_id"):
         cursor.execute("ALTER TABLE conversations ADD COLUMN ad_external_id TEXT")
-
     if not _column_exists(cursor, "conversations", "last_message_at_hint"):
         cursor.execute("ALTER TABLE conversations ADD COLUMN last_message_at_hint TEXT")
-
     if not _column_exists(cursor, "conversations", "last_incoming_message_key"):
         cursor.execute("ALTER TABLE conversations ADD COLUMN last_incoming_message_key TEXT")
 
     if not _column_exists(cursor, "conversation_messages", "notified_at"):
         cursor.execute("ALTER TABLE conversation_messages ADD COLUMN notified_at TIMESTAMP")
-
     if not _column_exists(cursor, "conversation_messages", "updated_at"):
         cursor.execute("ALTER TABLE conversation_messages ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -283,7 +268,6 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_market ON accounts(market)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_id ON proxies(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_user_status ON proxies(user_id, status)")
-
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_account_id ON conversations(account_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_status ON conversations(user_id, status)")

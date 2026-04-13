@@ -95,7 +95,7 @@ def _build_redscript_menu_keyboard(has_token: bool) -> InlineKeyboardMarkup:
     if has_token:
         rows.append([InlineKeyboardButton("✉️ Отправить письмо", callback_data="redscript:send")])
         rows.append([InlineKeyboardButton("🔎 Проверить API", callback_data="redscript:check")])
-        rows.append([InlineKeyboardButton("🧑 Настройки отправителя", callback_data="redscript:settings")])
+        rows.append([InlineKeyboardButton("🧑 Настройки покупателя", callback_data="redscript:settings")])
         rows.append([InlineKeyboardButton("🔑 Изменить API", callback_data="redscript:set_token")])
     else:
         rows.append([InlineKeyboardButton("🔑 Подключить API", callback_data="redscript:set_token")])
@@ -205,10 +205,8 @@ async def show_redscript_screen(update_or_query, user_id: int):
     text = (
         "📨 Отправка письма\n\n"
         f"API: {_mask_token(settings['access_token'])}\n"
-        f"Отправитель: {settings['initials'] or 'не задан'}\n"
-        f"Провайдер: {_provider_label(settings)}\n"
-        f"Сервис: {settings['service'] or 'OLX'}\n"
-        f"Версия: {settings['version'] or '2.0'}"
+        f"Покупатель: {settings['initials'] or 'не задан'}\n"
+        f"Провайдер: {_provider_label(settings)}"
     )
 
     keyboard = _build_redscript_menu_keyboard(has_token)
@@ -223,7 +221,7 @@ async def show_sender_settings_screen(query, user_id: int):
     user = get_user_by_id(user_id)
     settings = _get_user_settings(user or {})
     await query.edit_message_text(
-        "🧑 Настройки отправителя",
+        "🧑 Настройки покупателя",
         reply_markup=_build_sender_settings_keyboard(settings),
     )
 
@@ -232,7 +230,7 @@ async def _send_sender_settings_screen_to_chat(update: Update, context: ContextT
     user = get_user_by_id(user_id)
     settings = _get_user_settings(user or {})
     await update.message.reply_text(
-        "🧑 Настройки отправителя",
+        "🧑 Настройки покупателя",
         reply_markup=_build_sender_settings_keyboard(settings),
     )
 
@@ -245,10 +243,8 @@ async def _send_redscript_screen_to_chat(update: Update, user_id: int):
     text = (
         "📨 Отправка письма\n\n"
         f"API: {_mask_token(settings['access_token'])}\n"
-        f"Отправитель: {settings['initials'] or 'не задан'}\n"
-        f"Провайдер: {_provider_label(settings)}\n"
-        f"Сервис: {settings['service'] or 'OLX'}\n"
-        f"Версия: {settings['version'] or '2.0'}"
+        f"Покупатель: {settings['initials'] or 'не задан'}\n"
+        f"Провайдер: {_provider_label(settings)}"
     )
 
     await update.message.reply_text(
@@ -324,7 +320,7 @@ async def handle_redscript_callback(update: Update, context: ContextTypes.DEFAUL
         current_value = settings["initials"] or "не указано"
 
         msg = await query.edit_message_text(
-            "✍️ Введи имя / инициалы отправителя.\n\n"
+            "✍️ Введи имя / инициалы покупателя.\n\n"
             f"Сейчас стоит: {current_value}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="redscript:settings")]
@@ -342,7 +338,7 @@ async def handle_redscript_callback(update: Update, context: ContextTypes.DEFAUL
         current_value = settings["address"] or "не указано"
 
         msg = await query.edit_message_text(
-            "📍 Введи адрес отправителя.\n\n"
+            "📍 Введи адрес покупателя.\n\n"
             f"Сейчас стоит: {current_value}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="redscript:settings")]
@@ -490,10 +486,10 @@ async def handle_redscript_text(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data["awaiting_redscript_send_email"] = True
 
         await update.message.reply_text(
-            "Объявление распознано.\n\n"
+            "📦 Объявление найдено\n\n"
             f"Название: {payload.get('name') or '—'}\n"
             f"Сумма: {payload.get('amount') or '—'}\n"
-            f"Фото: {'найдено' if payload.get('image') else 'не найдено'}\n\n"
+            f"Фото: {'есть' if payload.get('image') else 'нет'}\n\n"
             "Теперь пришли почту продавца.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад", callback_data="redscript:menu")]
@@ -535,7 +531,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         _clear_redscript_flow(context)
         context.user_data.pop("redscript_send_payload", None)
         await update.message.reply_text(
-            "Сначала заполни настройки отправителя:\n- " + "\n- ".join(missing_fields),
+            "Сначала заполни данные покупателя:\n- " + "\n- ".join(missing_fields),
             reply_markup=build_back_to_menu_keyboard(),
         )
         return
@@ -589,8 +585,9 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
 
         if exc.is_ambiguous_success:
             await update.message.reply_text(
-                "⏳ Сервис слишком долго не отдавал ответ.\n\n"
-                "Письмо могло быть уже отправлено. Проверь почту перед повторной отправкой.",
+                "⏳ Отправка не подтверждена\n\n"
+                "Сообщение, вероятно, уже отправлено, но сервис не успел вернуть итоговый ответ.\n\n"
+                "Не отправляйте повторно сразу.",
                 reply_markup=build_back_to_menu_keyboard(),
             )
             return
@@ -608,10 +605,7 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
     _clear_redscript_flow(context)
     context.user_data.pop("redscript_send_payload", None)
 
-    result_data = result.get("result") or {}
     await update.message.reply_text(
-        "✅ Письмо отправлено.\n\n"
-        f"Link: {result_data.get('link') or '—'}\n"
-        f"Short: {result_data.get('short') or '—'}",
+        "✅ Письмо отправлено.",
         reply_markup=build_back_to_menu_keyboard(),
     )
