@@ -34,6 +34,21 @@ def _should_persist_last_used_to_db(busy_reason: str | None) -> bool:
     return reason not in BACKGROUND_DB_TOUCH_REASONS
 
 
+def _classify_runtime_open_error(exc: Exception) -> str:
+    text = str(exc or "").lower()
+
+    if text.startswith("proxy_failed:") or "socks5 authentication failed" in text:
+        return "proxy_failed"
+
+    if text.startswith("gologin_storage_unavailable:"):
+        return "gologin_storage_unavailable"
+
+    if "database is locked" in text:
+        return "database_locked"
+
+    return "failed"
+
+
 @dataclass
 class AccountRuntimeEntry:
     user_id: int | None
@@ -178,15 +193,19 @@ async def get_account_runtime(
                 try:
                     browser, context, runtime = await manager.__aenter__()
                 except Exception as retry_exc:
+                    kind = _classify_runtime_open_error(retry_exc)
                     mark_runtime_open_failed(account_id)
                     _runtime_debug(
-                        f"runtime_open_failed account_id={account_id} error={retry_exc}"
+                        f"runtime_open_failed account_id={account_id} "
+                        f"kind={kind} error={retry_exc}"
                     )
                     raise
             else:
+                kind = _classify_runtime_open_error(exc)
                 mark_runtime_open_failed(account_id)
                 _runtime_debug(
-                    f"runtime_open_failed account_id={account_id} error={exc}"
+                    f"runtime_open_failed account_id={account_id} "
+                    f"kind={kind} error={exc}"
                 )
                 raise
         else:

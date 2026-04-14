@@ -198,13 +198,25 @@ def _build_profile_name(
     account_id: int | None,
     olx_profile_name: str | None,
 ) -> str:
-    if (olx_profile_name or "").strip():
-        return olx_profile_name.strip()
     if account_id is not None:
         return f"OLX Account {account_id}"
+    if (olx_profile_name or "").strip():
+        return olx_profile_name.strip()
     if user_id is not None:
         return f"OLX User {user_id}"
     return "OLX Runtime Profile"
+
+
+def _is_profile_not_found_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    markers = [
+        "profile deleted or not found",
+        "profile not found",
+        "profile is not found",
+        "404",
+        "not found",
+    ]
+    return any(marker in text for marker in markers)
 
 
 def create_profile(profile_name: str) -> str:
@@ -373,7 +385,9 @@ def ensure_gologin_profile(
         account = get_account_by_id(user_id, account_id)
         if account:
             existing_profile_id = account.get("gologin_profile_id")
-            existing_profile_name = account.get("gologin_profile_name") or account.get("olx_profile_name")
+            existing_profile_name = (
+                account.get("gologin_profile_name") or account.get("olx_profile_name")
+            )
 
     final_profile_name = _build_profile_name(
         user_id=user_id,
@@ -383,19 +397,27 @@ def ensure_gologin_profile(
 
     profile_id = existing_profile_id
     profile_name = final_profile_name
+    created_new_profile = False
 
     if not profile_id:
         profile_id = create_profile(profile_name)
+        created_new_profile = True
 
     try:
         proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
         cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
-    except Exception:
-        if existing_profile_id:
+    except Exception as exc:
+        if existing_profile_id and _is_profile_not_found_error(exc):
             profile_id = create_profile(profile_name)
+            created_new_profile = True
             proxy_payload = apply_proxy_to_profile(profile_id, proxy_text)
             cookies_count = upload_cookies_to_profile(profile_id, cookies_json)
         else:
+            if created_new_profile and profile_id and profile_id != existing_profile_id:
+                try:
+                    delete_gologin_profile(profile_id)
+                except Exception:
+                    pass
             raise
 
     if user_id is not None and account_id is not None:

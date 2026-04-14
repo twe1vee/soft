@@ -24,6 +24,18 @@ def _classify_account_error(error_text: str) -> tuple[str, str]:
     if "cloudfront" in lowered or "access denied" in lowered:
         return "cloudfront_blocked", "OLX/CloudFront blocked the request"
 
+    storage_markers = [
+        "gologin_storage_unavailable:",
+        "storage-worker-test.gologin",
+        "s3.eu-central-1.amazonaws.com",
+        "failed to resolve",
+        "nameresolutionerror",
+        "getaddrinfo failed",
+    ]
+    for marker in storage_markers:
+        if marker in lowered:
+            return "gologin_storage_unavailable", error_text or "GoLogin storage временно недоступен"
+
     timeout_markers = [
         "net::err_timed_out",
         "timed out",
@@ -34,6 +46,8 @@ def _classify_account_error(error_text: str) -> tuple[str, str]:
             return "timeout", error_text or "Превышено время ожидания при проверке аккаунта"
 
     proxy_markers = [
+        "proxy_failed:",
+        "socks5 authentication failed",
         "net::err_proxy",
         "proxy authentication required",
         "proxy error",
