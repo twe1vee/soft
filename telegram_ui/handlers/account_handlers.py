@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -83,8 +85,32 @@ async def safe_edit_or_reply(query, text: str, reply_markup=None, **kwargs):
         raise
 
 
+async def _edit_or_reply_to_prompt(update: Update, text: str, reply_markup=None):
+    reply_to = update.message.reply_to_message if update.message else None
+    if reply_to and reply_to.from_user and reply_to.from_user.is_bot:
+        try:
+            await reply_to.edit_text(text=text, reply_markup=reply_markup)
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
+
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+
 def _build_not_found_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
+    ])
+
+
+def _build_after_account_import_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить ещё аккаунт", callback_data="account:add")],
         [InlineKeyboardButton("⬅️ Назад к аккаунтам", callback_data="menu:account")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
     ])
@@ -405,8 +431,7 @@ async def handle_account_callback(update: Update, context: ContextTypes.DEFAULT_
             "⏳ Проверка аккаунта поставлена в очередь.\n\n"
             f"Аккаунт: {account_display_name(account)}\n"
             f"Рынок: {humanize_account_market(account.get('market'))}\n"
-            f"Прокси: {proxy_text}\n\n"
-            "Результат пришлю следующим сообщением.",
+            f"Прокси: {proxy_text}",
             reply_markup=build_account_card_keyboard(account_id, has_proxy=bool(account.get("proxy_id"))),
         )
         return
@@ -615,17 +640,21 @@ async def handle_account_cookies_text(update: Update, context: ContextTypes.DEFA
     if context.user_data.get("awaiting_account_cookies"):
         normalized = parse_cookies_json(text)
         if not normalized:
-            await update.message.reply_text(
+            await _edit_or_reply_to_prompt(
+                update,
                 "❌ Не удалось распознать cookies JSON.\n\n"
-                "Пришли корректный JSON текстом или .txt файлом."
+                "Пришли корректный JSON текстом или .txt файлом.",
+                reply_markup=_build_after_account_import_keyboard(),
             )
             return
 
         market_code = _normalize_market(context.user_data.get("awaiting_account_market"))
         create_account(user_id=user_id, cookies_json=normalized, market=market_code)
         context.user_data.clear()
-        await update.message.reply_text(
-            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}"
+        await _edit_or_reply_to_prompt(
+            update,
+            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}",
+            reply_markup=_build_after_account_import_keyboard(),
         )
         return
 
@@ -678,20 +707,30 @@ async def handle_account_cookies_document(update: Update, context: ContextTypes.
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
-        await update.message.reply_text("❌ Файл должен быть в UTF-8.")
+        await _edit_or_reply_to_prompt(
+            update,
+            "❌ Файл должен быть в UTF-8.",
+            reply_markup=_build_after_account_import_keyboard(),
+        )
         return
 
     normalized = parse_cookies_json(text)
     if not normalized:
-        await update.message.reply_text("❌ Не удалось распознать cookies JSON в файле.")
+        await _edit_or_reply_to_prompt(
+            update,
+            "❌ Не удалось распознать cookies JSON в файле.",
+            reply_markup=_build_after_account_import_keyboard(),
+        )
         return
 
     if context.user_data.get("awaiting_account_cookies"):
         market_code = _normalize_market(context.user_data.get("awaiting_account_market"))
         create_account(user_id=user_id, cookies_json=normalized, market=market_code)
         context.user_data.clear()
-        await update.message.reply_text(
-            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}"
+        await _edit_or_reply_to_prompt(
+            update,
+            f"✅ Аккаунт добавлен.\nРынок: {humanize_account_market(market_code)}",
+            reply_markup=_build_after_account_import_keyboard(),
         )
         return
 

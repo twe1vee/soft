@@ -129,6 +129,30 @@ def build_proxy_delete_confirm_keyboard(proxy_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def _build_after_proxy_import_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить ещё прокси", callback_data="proxy:add")],
+        [InlineKeyboardButton("⬅️ Назад к прокси", callback_data="menu:proxies")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
+    ])
+
+
+async def _edit_or_reply_to_prompt(update: Update, text: str, reply_markup=None):
+    reply_to = update.message.reply_to_message if update.message else None
+    if reply_to and reply_to.from_user and reply_to.from_user.is_bot:
+        try:
+            await reply_to.edit_text(text=text, reply_markup=reply_markup)
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
+
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+
 def _is_valid_socks5_proxy(proxy_text: str) -> bool:
     raw = (proxy_text or "").strip()
     if not raw:
@@ -330,8 +354,7 @@ async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await safe_edit_message_text(
             query,
             "⏳ Проверка прокси поставлена в очередь.\n\n"
-            f"Прокси: {proxy_short(proxy_text, max_len=50)}\n\n"
-            "Результат пришлю следующим сообщением.",
+            f"Прокси: {proxy_short(proxy_text, max_len=50)}",
             reply_markup=build_proxy_card_keyboard(proxy_id),
         )
         return
@@ -386,9 +409,11 @@ async def handle_proxies_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     proxy_list, invalid_list = _parse_proxy_lines(text)
     if not proxy_list:
-        await update.message.reply_text(
+        await _edit_or_reply_to_prompt(
+            update,
             "❌ Не удалось найти ни одного подходящего прокси.\n\n"
-            "Разрешён только SOCKS5."
+            "Разрешён только SOCKS5.",
+            reply_markup=_build_after_proxy_import_keyboard(),
         )
         return
 
@@ -404,7 +429,11 @@ async def handle_proxies_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"{preview}"
         )
 
-    await update.message.reply_text(reply)
+    await _edit_or_reply_to_prompt(
+        update,
+        reply,
+        reply_markup=_build_after_proxy_import_keyboard(),
+    )
 
 
 async def handle_proxies_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -421,14 +450,20 @@ async def handle_proxies_document(update: Update, context: ContextTypes.DEFAULT_
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
-        await update.message.reply_text("❌ Файл должен быть в UTF-8.")
+        await _edit_or_reply_to_prompt(
+            update,
+            "❌ Файл должен быть в UTF-8.",
+            reply_markup=_build_after_proxy_import_keyboard(),
+        )
         return
 
     proxy_list, invalid_list = _parse_proxy_lines(text)
     if not proxy_list:
-        await update.message.reply_text(
+        await _edit_or_reply_to_prompt(
+            update,
             "❌ Не удалось найти ни одного подходящего прокси в файле.\n\n"
-            "Разрешён только SOCKS5."
+            "Разрешён только SOCKS5.",
+            reply_markup=_build_after_proxy_import_keyboard(),
         )
         return
 
@@ -444,4 +479,8 @@ async def handle_proxies_document(update: Update, context: ContextTypes.DEFAULT_
             f"{preview}"
         )
 
-    await update.message.reply_text(reply)
+    await _edit_or_reply_to_prompt(
+        update,
+        reply,
+        reply_markup=_build_after_proxy_import_keyboard(),
+    )

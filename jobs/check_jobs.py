@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import Application
 
 from db import (
@@ -156,6 +158,7 @@ def _humanize_account_status(status: str | None) -> str:
         "write_blocked": "не может отправлять сообщения",
         "write_limited": "лимит на новые сообщения",
         "loading_retry": "не прогрузился, был повтор",
+        "gologin_storage_unavailable": "ошибка gologin",
     }
     return mapping.get(value, value or "неизвестно")
 
@@ -168,14 +171,30 @@ def _account_display_name(account: dict) -> str:
     )
 
 
+def _build_proxy_result_keyboard(proxy_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅️ Назад к прокси", callback_data=f"proxy:open:{proxy_id}")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
+        ]
+    )
+
+
+def _build_account_result_keyboard(account_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅️ Назад к аккаунту", callback_data=f"account:open:{account_id}")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu:main")],
+        ]
+    )
+
+
 def _build_account_check_result_text(account: dict, proxy: dict, result: dict) -> str:
     profile_name = _account_display_name(account)
     status_text = _humanize_account_status(account.get("status"))
     market_text = _humanize_account_market(account.get("market"))
     proxy_text = _proxy_short(proxy.get("proxy_text", ""), max_len=60)
-    final_url = result.get("final_url") or "—"
-    page_title = result.get("page_title") or "—"
-    error = result.get("error")
+    error = (result.get("error") or "").strip()
 
     lines = [
         "🔎 Проверка аккаунта завершена",
@@ -184,11 +203,7 @@ def _build_account_check_result_text(account: dict, proxy: dict, result: dict) -
         f"Рынок: {market_text}",
         f"Статус: {status_text}",
         f"Прокси: {proxy_text}",
-        f"Final URL: {final_url}",
     ]
-
-    if page_title and page_title != "—":
-        lines.append(f"Title: {page_title}")
 
     if error and status_text != "живой":
         lines.extend(["", f"Причина: {error}"])
@@ -199,7 +214,7 @@ def _build_account_check_result_text(account: dict, proxy: dict, result: dict) -
 @dataclass(slots=True)
 class CheckJob:
     job_id: str
-    job_type: str  # "proxy_check" | "account_check"
+    job_type: str
     user_id: int
     chat_id: int
     source_message_id: int | None = None
@@ -415,10 +430,12 @@ class CheckJobsManager:
             if human_error and ui_status != "живой":
                 text_lines.extend(["", f"Причина: {human_error}"])
 
-            await self._notify_text(
+            await self._notify_or_edit(
                 chat_id=job.chat_id,
                 text="\n".join(text_lines),
                 reply_to_message_id=job.source_message_id,
+                edit_message_id=job.source_message_id,
+                reply_markup=_build_proxy_result_keyboard(proxy_id),
             )
 
             job.result = result
@@ -454,10 +471,12 @@ class CheckJobsManager:
             if not proxy_id:
                 update_account_status(job.user_id, account_id, "missing_proxy")
                 update_account_last_check(job.user_id, account_id)
-                await self._notify_text(
+                await self._notify_or_edit(
                     chat_id=job.chat_id,
                     text="❌ У аккаунта не привязан прокси.\n\nСначала привяжи 1 прокси к этому аккаунту.",
                     reply_to_message_id=job.source_message_id,
+                    edit_message_id=job.source_message_id,
+                    reply_markup=_build_account_result_keyboard(account_id),
                 )
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -467,10 +486,12 @@ class CheckJobsManager:
             if not proxy:
                 update_account_status(job.user_id, account_id, "proxy_not_found")
                 update_account_last_check(job.user_id, account_id)
-                await self._notify_text(
+                await self._notify_or_edit(
                     chat_id=job.chat_id,
                     text="❌ Привязанный прокси не найден.\n\nПривяжи другой прокси.",
                     reply_to_message_id=job.source_message_id,
+                    edit_message_id=job.source_message_id,
+                    reply_markup=_build_account_result_keyboard(account_id),
                 )
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -481,10 +502,12 @@ class CheckJobsManager:
             if not cookies_json:
                 update_account_status(job.user_id, account_id, "missing_cookies")
                 update_account_last_check(job.user_id, account_id)
-                await self._notify_text(
+                await self._notify_or_edit(
                     chat_id=job.chat_id,
                     text="❌ У аккаунта отсутствуют cookies_json.",
                     reply_to_message_id=job.source_message_id,
+                    edit_message_id=job.source_message_id,
+                    reply_markup=_build_account_result_keyboard(account_id),
                 )
                 job.status = "failed"
                 job.finished_at = time.time()
@@ -517,10 +540,12 @@ class CheckJobsManager:
             updated_account = get_account_by_id(job.user_id, account_id) or account
 
             text = _build_account_check_result_text(updated_account, proxy, result)
-            await self._notify_text(
+            await self._notify_or_edit(
                 chat_id=job.chat_id,
                 text=text,
                 reply_to_message_id=job.source_message_id,
+                edit_message_id=job.source_message_id,
+                reply_markup=_build_account_result_keyboard(account_id),
             )
 
             job.result = result
@@ -532,16 +557,63 @@ class CheckJobsManager:
                 f"status={result.get('status')}"
             )
 
+    async def _notify_or_edit(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None,
+        edit_message_id: int | None,
+        reply_markup=None,
+    ) -> None:
+        if edit_message_id:
+            try:
+                await self.application.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=edit_message_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                )
+                return
+            except BadRequest as exc:
+                lowered = str(exc).lower()
+                if "message is not modified" in lowered:
+                    try:
+                        await self.application.bot.edit_message_reply_markup(
+                            chat_id=chat_id,
+                            message_id=edit_message_id,
+                            reply_markup=reply_markup,
+                        )
+                        return
+                    except Exception:
+                        pass
+                fallback_markers = [
+                    "message to edit not found",
+                    "message can't be edited",
+                    "there is no text in the message to edit",
+                ]
+                if not any(marker in lowered for marker in fallback_markers):
+                    raise
+
+        await self._notify_text(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+
     async def _notify_text(
         self,
         *,
         chat_id: int,
         text: str,
         reply_to_message_id: int | None,
+        reply_markup=None,
     ) -> None:
         await self.application.bot.send_message(
             chat_id=chat_id,
             text=text,
+            reply_markup=reply_markup,
             reply_to_message_id=reply_to_message_id,
         )
 
