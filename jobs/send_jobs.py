@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
-
+from olx.draft import generate_draft
 from telegram.ext import Application
 
 from db import (
@@ -16,12 +16,14 @@ from db import (
     get_proxy_by_id,
     update_account_last_check,
     update_account_status,
+    update_ad_draft,
     update_ad_external_id,
     update_ad_status,
     update_pending_action_status,
     update_proxy_last_check,
     update_proxy_status,
 )
+
 from jobs.action_retry_policy import get_retry_decision
 from jobs.send_outcome import (
     build_ad_failure_status,
@@ -358,9 +360,7 @@ class SendJobsManager:
                 job.finished_at = time.time()
                 await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=proxy)
                 return
-
-            ad_url = ad.get("url")
-            draft_text = (ad.get("draft_text") or "").strip()
+            ad_url = (ad.get("url") or "").strip()
 
             if not ad_url:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_missing_url")
@@ -379,12 +379,20 @@ class SendJobsManager:
                 await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=proxy)
                 return
 
+            fresh_ad_data = {
+                "seller_name": ad.get("seller_name") or "",
+                "price": ad.get("price") or "",
+                "url": ad_url,
+            }
+
+            draft_text = generate_draft(job.user_id, fresh_ad_data).strip()
+
             if not draft_text:
                 update_ad_status(job.user_id, job.ad_row_id, "send_blocked_empty_draft")
                 update_pending_action_status(job.pending_action_id, "failed")
                 result = build_failure_result(
                     status="empty_draft",
-                    error="У объявления пустой draft_text",
+                    error="Не удалось собрать текст из активного шаблона",
                     ad=ad,
                     account=account,
                     proxy=proxy,
@@ -395,6 +403,9 @@ class SendJobsManager:
                 job.finished_at = time.time()
                 await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=proxy)
                 return
+
+            update_ad_draft(job.user_id, job.ad_row_id, draft_text)
+            ad = get_ad_by_id(job.user_id, job.ad_row_id) or ad
 
             update_ad_status(job.user_id, job.ad_row_id, "sending")
             update_pending_action_status(job.pending_action_id, "running")
