@@ -5,12 +5,12 @@ TRANSIENT_SEND_STATUSES = {
     "send_button_not_found",
     "send_clicked_unverified",
     "timeout",
+    "browser_failed",
 }
 
 DEAD_SEND_STATUSES = {
     "cloudfront_blocked",
     "login_required_or_chat_blocked",
-    "browser_failed",
 }
 
 WRITE_LIMITED_SEND_STATUSES = {

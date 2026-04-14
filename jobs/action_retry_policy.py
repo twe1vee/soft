@@ -15,6 +15,7 @@ SEND_TRANSIENT_STATUSES = {
     "send_button_not_found",
     "send_clicked_unverified",
     "timeout",
+    "browser_failed",
 }
 
 SEND_SLOW_RETRY_STATUSES = {
