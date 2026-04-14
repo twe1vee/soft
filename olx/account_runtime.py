@@ -89,6 +89,13 @@ _RUNTIME_BY_ACCOUNT_ID: dict[int, AccountRuntimeEntry] = {}
 _RUNTIME_REGISTRY_LOCK = asyncio.Lock()
 
 
+def get_account_runtime_busy_reason(account_id: int) -> str | None:
+    entry = _RUNTIME_BY_ACCOUNT_ID.get(int(account_id))
+    if entry is None:
+        return None
+    return entry.busy_reason
+
+
 async def get_account_runtime(
     *,
     user_id: int | None,

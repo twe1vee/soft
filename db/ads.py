@@ -256,6 +256,39 @@ def update_ad_external_id(
     cursor = conn.cursor()
 
     cursor.execute("""
+        SELECT ad_id
+        FROM ads
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+    """, (ad_db_id, user_id))
+    current_row = cursor.fetchone()
+
+    if not current_row:
+        conn.close()
+        return
+
+    current_ad_id = (
+        current_row["ad_id"] if hasattr(current_row, "keys") else current_row[0]
+    ) or ""
+    current_ad_id = str(current_ad_id).strip()
+
+    if current_ad_id == value:
+        conn.close()
+        return
+
+    cursor.execute("""
+        SELECT id
+        FROM ads
+        WHERE user_id = ? AND ad_id = ? AND id != ?
+        LIMIT 1
+    """, (user_id, value, ad_db_id))
+    conflict_row = cursor.fetchone()
+
+    if conflict_row:
+        conn.close()
+        return
+
+    cursor.execute("""
         UPDATE ads
         SET ad_id = ?
         WHERE id = ? AND user_id = ?

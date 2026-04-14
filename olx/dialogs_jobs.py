@@ -15,7 +15,11 @@ from db.accounts import (
     get_expired_write_blocked_accounts_with_profiles,
     get_stale_accounts_with_profiles,
 )
-from olx.account_runtime import close_account_runtime, close_idle_account_runtimes
+from olx.account_runtime import (
+    close_account_runtime,
+    close_idle_account_runtimes,
+    get_account_runtime_busy_reason,
+)
 from olx.dialogs_checker import check_user_dialogs
 from olx.dialogs_notifier import send_incoming_dialog_notifications
 from olx.profile_manager_gologin import (
@@ -39,6 +43,12 @@ ALIVE_ACCOUNT_STATUSES = {
     "write_limited",
     "loading_retry",
     "write_blocked",
+}
+
+DIALOGS_SKIP_BUSY_REASONS = {
+    "send_message",
+    "check_account_alive",
+    "proxy_check",
 }
 
 
@@ -109,6 +119,7 @@ async def run_dialogs_polling_for_user(
 
     alive_accounts: list[dict] = []
     proxies_by_id: dict[int, dict] = {}
+    skipped_busy_accounts = 0
 
     print(f"[dialogs_jobs] loaded_accounts user_id={user_id} total={len(accounts)}")
 
@@ -131,6 +142,16 @@ async def run_dialogs_polling_for_user(
                 f"status={fresh_account.get('status')} "
                 f"has_cookies={bool(fresh_account.get('cookies_json'))} "
                 f"market={fresh_account.get('market')}"
+            )
+            continue
+
+        busy_reason = get_account_runtime_busy_reason(int(account_id))
+        if busy_reason in DIALOGS_SKIP_BUSY_REASONS:
+            skipped_busy_accounts += 1
+            print(
+                f"[dialogs_jobs] skip_busy_account "
+                f"user_id={user_id} account_id={account_id} "
+                f"busy_reason={busy_reason} market={fresh_account.get('market')}"
             )
             continue
 
@@ -164,7 +185,9 @@ async def run_dialogs_polling_for_user(
 
     if not alive_accounts:
         print(f"[dialogs_jobs] no alive accounts user_id={user_id}")
-        return _build_empty_poll_result(len(accounts))
+        result = _build_empty_poll_result(len(accounts))
+        result["accounts_skipped"] = len(accounts) + skipped_busy_accounts
+        return result
 
     result = await check_user_dialogs(
         user_id=user_id,
@@ -173,10 +196,12 @@ async def run_dialogs_polling_for_user(
     )
 
     accounts_checked = int(result.get("accounts_checked") or 0)
-    accounts_skipped = int(result.get("accounts_skipped") or 0)
+    accounts_skipped = int(result.get("accounts_skipped") or 0) + skipped_busy_accounts
     total_new_incoming_count = int(result.get("total_new_incoming_count") or 0)
     account_results = result.get("account_results") or []
     new_incoming_events = result.get("new_incoming_events") or []
+
+    result["accounts_skipped"] = accounts_skipped
 
     print(
         f"[dialogs_jobs] result user_id={user_id} "
