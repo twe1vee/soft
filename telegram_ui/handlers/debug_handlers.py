@@ -6,6 +6,9 @@ from telegram_ui.handlers.common import build_ad_caption, get_current_user
 
 
 async def pending_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update is None or update.message is None:
+        return
+
     current_user = get_current_user(update)
     user_id = current_user["id"]
 
@@ -29,9 +32,17 @@ async def pending_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def last_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current_user = get_current_user(update)
-    user_id = current_user["id"]
+    if update is None or update.message is None:
+        print(f"[debug_handlers] last_handler skipped update_present={update is not None} error={context.error}")
+        return
 
+    try:
+        current_user = get_current_user(update)
+    except Exception as exc:
+        print(f"[debug_handlers] last_handler failed_get_current_user error={exc}")
+        return
+
+    user_id = current_user["id"]
     ad = get_last_ad(user_id)
 
     if not ad:
