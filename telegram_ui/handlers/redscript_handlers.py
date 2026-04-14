@@ -50,6 +50,10 @@ def _sanitize_redscript_name(value: str | None) -> str:
     return text
 
 
+def _normalize_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
 def _clear_redscript_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
     keys = [
         "awaiting_redscript_api_token",
@@ -59,6 +63,8 @@ def _clear_redscript_flow(context: ContextTypes.DEFAULT_TYPE) -> None:
         "awaiting_redscript_send_email",
         "redscript_send_payload",
         "redscript_prompt_message_id",
+        "redscript_send_in_progress",
+        "redscript_last_send_key",
     ]
     for key in keys:
         context.user_data.pop(key, None)
@@ -250,6 +256,21 @@ async def _send_redscript_screen_to_chat(update: Update, user_id: int):
     await update.message.reply_text(
         text,
         reply_markup=_build_redscript_menu_keyboard(has_token),
+    )
+
+
+def _build_send_dedupe_key(payload: dict, settings: dict) -> str:
+    return "|".join(
+        [
+            _normalize_email(payload.get("email")),
+            str(payload.get("ad_url") or "").strip(),
+            str(payload.get("name") or "").strip(),
+            str(payload.get("amount") or "").strip(),
+            str(settings.get("mail_service") or "").strip().lower(),
+            str(settings.get("service") or "").strip().lower(),
+            str(settings.get("version") or "").strip(),
+            str(payload.get("country") or settings.get("country") or "").strip(),
+        ]
     )
 
 
@@ -542,6 +563,22 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
     actual_country = (payload.get("country") or settings["country"] or DEFAULT_COUNTRY).strip()
     actual_type = DEFAULT_TYPE
 
+    dedupe_key = _build_send_dedupe_key(payload, settings)
+
+    if context.user_data.get("redscript_send_in_progress"):
+        await update.message.reply_text(
+            "⏳ Отправка уже выполняется.\n\n"
+            "Дождись результата текущего запроса и не отправляй письмо повторно."
+        )
+        return
+
+    if context.user_data.get("redscript_last_send_key") == dedupe_key:
+        await update.message.reply_text(
+            "⏳ Такой запрос уже был отправлен недавно.\n\n"
+            "Не запускай повторно тот же кейс подряд."
+        )
+        return
+
     debug_payload = {
         "email": payload.get("email") or "",
         "mail_service": settings["mail_service"] or DEFAULT_MAIL_SERVICE,
@@ -556,6 +593,9 @@ async def _send_redscript_mail_from_payload(update: Update, context: ContextType
         "address": settings["address"] or None,
     }
     print(f"[redscript_handler] send_mail payload={debug_payload}")
+
+    context.user_data["redscript_send_in_progress"] = True
+    context.user_data["redscript_last_send_key"] = dedupe_key
 
     try:
         result = await send_mail(
