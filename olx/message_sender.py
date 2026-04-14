@@ -486,7 +486,7 @@ async def send_message_to_ad(
         await fill_message_input(input_locator, message_text)
         result["timings_ms"]["fill_message_input"] = _elapsed_ms(t_step)
 
-        await page.wait_for_timeout(250)
+        await page.wait_for_timeout(350)
 
         effective_message_text = await _read_effective_input_text(input_locator)
         result["effective_message_text"] = effective_message_text
@@ -597,7 +597,7 @@ async def send_message_to_ad(
             await save_debug_artifacts(page, result, prefix="send_button_not_found")
             return result
 
-        await page.wait_for_timeout(600)
+        await page.wait_for_timeout(900)
 
         t_step = time.perf_counter()
         verification = await verify_message_sent(
@@ -606,8 +606,8 @@ async def send_message_to_ad(
             message_text,
             market_code=market_code,
             attachment_expected=bool(result.get("template_image_attached")),
-            max_rounds=12 if result.get("template_image_attached") else 10,
-            round_wait_ms=1000,
+            max_rounds=18 if result.get("template_image_attached") else 14,
+            round_wait_ms=1250,
         )
         result["timings_ms"]["verify_message_sent"] = _elapsed_ms(t_step)
         result.update(verification)
@@ -621,8 +621,8 @@ async def send_message_to_ad(
                 message_text,
                 market_code=market_code,
                 attachment_expected=bool(result.get("template_image_attached")),
-                max_rounds=8,
-                round_wait_ms=1500,
+                max_rounds=10,
+                round_wait_ms=1750,
             )
             result["timings_ms"]["verify_message_sent_pending_recheck"] = _elapsed_ms(t_step)
 
@@ -697,10 +697,17 @@ async def send_message_to_ad(
                 "OLX показал предупреждение о персональных данных. Отправка началась, "
                 "но сайт не подтвердил, что сообщение ушло."
             )
+        elif verification.get("post_send_loader_rounds", 0) >= 2:
+            result["error"] = (
+                "Сообщение не удалось подтвердить автоматически. "
+                "OLX слишком долго обрабатывал отправку и не показал итоговый статус."
+            )
         else:
             result["error"] = (
-                "Сообщение не удалось подтвердить автоматически. Возможно, OLX не принял отправку."
+                "Сообщение не удалось подтвердить автоматически. "
+                "Возможно, OLX ещё не успел показать итог отправки."
             )
+
         result["timings_ms"]["total"] = _elapsed_ms(t_total)
         await save_debug_artifacts(page, result, prefix="send_clicked_unverified")
         return result

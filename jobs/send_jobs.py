@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
-from olx.draft import generate_draft
+
 from telegram.ext import Application
 
 from db import (
@@ -23,7 +23,6 @@ from db import (
     update_proxy_last_check,
     update_proxy_status,
 )
-
 from jobs.action_retry_policy import get_retry_decision
 from jobs.send_outcome import (
     build_ad_failure_status,
@@ -33,6 +32,7 @@ from jobs.send_outcome import (
 )
 from jobs.send_result_text import build_failure_result, build_send_result_text
 from jobs.send_retry_policy import map_send_status_to_account_status
+from olx.draft import generate_draft
 from olx.message_sender import send_message_to_ad
 
 BOT_DATA_KEY = "send_jobs_manager"
@@ -360,6 +360,7 @@ class SendJobsManager:
                 job.finished_at = time.time()
                 await self._notify_result(job=job, result=result, ad=ad, account=account, proxy=proxy)
                 return
+
             ad_url = (ad.get("url") or "").strip()
 
             if not ad_url:
@@ -481,7 +482,7 @@ class SendJobsManager:
                     result.setdefault("first_try_status", first_try_status)
 
             if send_status == "send_clicked_unverified":
-                account_status = "write_blocked" if retry_used else "loading_retry"
+                account_status = "working"
             else:
                 account_status = map_send_status_to_account_status(
                     send_status,

@@ -16,8 +16,8 @@ def _humanize_send_error(
 
     if status == "message_delivery_failed":
         return (
-            "OLX не даёт этому аккаунту отправлять новые сообщения. "
-            "Старые диалоги ещё могут открываться, но для отправки нужен другой аккаунт."
+            "⚠️ Clica para tentar de novo.\n"
+            "OLX не доставил сообщение. Попробуйте ещё раз."
         )
 
     if status == "message_input_not_found":
@@ -47,7 +47,7 @@ def _humanize_send_error(
     if status == "send_clicked_unverified":
         return (
             "Сообщение не удалось подтвердить автоматически. "
-            "Возможно, OLX не принял отправку."
+            "Возможно, сайт долго обрабатывал отправку или не показал итоговый статус."
         )
 
     if status == "timeout":

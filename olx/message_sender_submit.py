@@ -51,6 +51,12 @@ ATTACHMENT_REMOVE_SELECTORS = [
     '[data-testid="attachment-remove"]',
 ]
 
+POST_SEND_LOADING_SELECTORS = [
+    '[data-testid="chat-form-container"] [data-testid="loader"]',
+    '[data-testid="chat-form-container"] [data-cy="loader"]',
+    '[data-testid="chat-form-container"] [data-nx-name="OLoader"]',
+]
+
 
 def _build_send_button_texts(market_code: str = DEFAULT_MESSAGE_MARKET) -> list[str]:
     values = []
@@ -704,7 +710,6 @@ async def detect_pending_message_state(
                 if not await item.is_visible():
                     continue
 
-                    # unreachable
                 label_text = normalize_text(await item.inner_text())
                 label_text_lower = label_text.lower()
 
@@ -750,6 +755,13 @@ async def _has_visible_selector(page, selector: str, limit: int = 20) -> bool:
     return False
 
 
+async def _detect_post_send_loader(page) -> bool:
+    for selector in POST_SEND_LOADING_SELECTORS:
+        if await _has_visible_selector(page, selector):
+            return True
+    return False
+
+
 async def verify_message_sent(
     page,
     input_locator,
@@ -757,8 +769,8 @@ async def verify_message_sent(
     *,
     market_code: str = DEFAULT_MESSAGE_MARKET,
     attachment_expected: bool = False,
-    max_rounds: int = 10,
-    round_wait_ms: int = 1000,
+    max_rounds: int = 14,
+    round_wait_ms: int = 1250,
 ) -> dict[str, Any]:
     target_text = normalize_text(message_text)
 
@@ -781,6 +793,12 @@ async def verify_message_sent(
         "market_code": market_code,
         "attachment_expected": attachment_expected,
         "verification_rounds_used": 0,
+        "post_send_loader_visible": False,
+        "post_send_loader_rounds": 0,
+        "post_send_input_nonempty_rounds": 0,
+        "post_send_chat_root_rounds": 0,
+        "post_send_sent_status_rounds": 0,
+        "post_send_message_visible_rounds": 0,
     }
 
     for round_index in range(max_rounds):
@@ -794,14 +812,25 @@ async def verify_message_sent(
 
         try:
             verification["post_send_chat_root_found"] = await has_chat_root(page)
+            if verification["post_send_chat_root_found"]:
+                verification["post_send_chat_root_rounds"] += 1
         except Exception:
             pass
 
         try:
             input_value = await read_input_value(input_locator)
             verification["post_send_input_empty"] = not bool(input_value)
+            if not verification["post_send_input_empty"]:
+                verification["post_send_input_nonempty_rounds"] += 1
         except Exception:
             verification["post_send_input_empty"] = False
+
+        try:
+            verification["post_send_loader_visible"] = await _detect_post_send_loader(page)
+            if verification["post_send_loader_visible"]:
+                verification["post_send_loader_rounds"] += 1
+        except Exception:
+            verification["post_send_loader_visible"] = False
 
         try:
             body_text = await page_body_text(page)
@@ -840,6 +869,7 @@ async def verify_message_sent(
         for selector in STRICT_SENT_STATUS_SELECTORS:
             if await _has_visible_selector(page, selector):
                 verification["post_send_sent_status_found"] = True
+                verification["post_send_sent_status_rounds"] += 1
                 break
 
         verification["post_send_sent_message_found"] = False
@@ -865,6 +895,7 @@ async def verify_message_sent(
                     try:
                         if await item.is_visible():
                             verification["post_send_message_visible"] = True
+                            verification["post_send_message_visible_rounds"] += 1
                             break
                     except Exception:
                         continue
@@ -885,6 +916,7 @@ async def verify_message_sent(
                             text = normalize_text(await item.inner_text())
                             if text == target_text:
                                 verification["post_send_message_visible"] = True
+                                verification["post_send_message_visible_rounds"] += 1
                                 exact_match_count += 1
                                 break
                         except Exception:
@@ -925,7 +957,7 @@ async def verify_message_sent(
             and verification["post_send_chat_root_found"]
             and not verification["failed_message_detected"]
             and not verification["pending_message_detected"]
-            and round_index >= 2
+            and round_index >= 3
         ):
             verification["delivery_verified"] = True
             return verification
